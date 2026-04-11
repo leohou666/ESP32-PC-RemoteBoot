@@ -1,0 +1,7 @@
+sdkconfig*
+build/
+.agents/
+.cache/
+.vscode/
+managed_components/
+.codex

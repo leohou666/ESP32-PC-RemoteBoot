@@ -1,0 +1,192 @@
+menu "RemoteBoot Configuration"
+
+    menu "GPIO Pins"
+        config RB_GPIO_RELAY1
+            int "Relay 1 GPIO (power button)"
+            default 4
+            help
+                GPIO pin connected to relay 1 (PC power button).
+
+        config RB_GPIO_RELAY2
+            int "Relay 2 GPIO (reset button)"
+            default 5
+            help
+                GPIO pin connected to relay 2 (PC reset button).
+
+        config RB_GPIO_POST_DETECT
+            int "POST detect GPIO (HDD LED)"
+            default 6
+            help
+                GPIO pin connected to PC HDD LED for POST detection.
+    endmenu
+
+    menu "POST Detector"
+        choice RB_POST_DETECT_MODE
+            prompt "POST detection method"
+            default RB_POST_DETECT_USB
+            help
+                Choose how to detect that BIOS POST has finished and
+                the bootloader (GRUB) is ready for keyboard input.
+
+            config RB_POST_DETECT_HDD
+                bool "HDD LED GPIO monitoring"
+                help
+                    Monitor the HDD LED signal on a GPIO pin.
+                    Requires wiring HDD_LED+ from JFP1 to the ESP32.
+
+            config RB_POST_DETECT_USB
+                bool "USB bus handshake (recommended)"
+                help
+                    Detect POST completion by observing USB mount/unmount
+                    events from TinyUSB. The BIOS mounts the USB keyboard
+                    during POST, then a bus reset occurs when handing off
+                    to GRUB. No extra GPIO wiring needed.
+        endchoice
+
+        config RB_POST_WARMUP_MS
+            int "POST warmup time (ms)"
+            default 5000
+            depends on RB_POST_DETECT_HDD
+            help
+                Time to wait after power-on before monitoring HDD LED.
+
+        config RB_POST_QUIET_MS
+            int "POST quiet threshold (ms)"
+            default 3000
+            depends on RB_POST_DETECT_HDD
+            help
+                Duration of HDD LED inactivity to consider POST complete.
+
+        config RB_USB_POST_SETTLE_MS
+            int "USB settle time (ms)"
+            default 2000
+            depends on RB_POST_DETECT_USB
+            help
+                After the last USB mount event, wait this long before
+                declaring POST complete. This allows the bus to stabilise
+                after the BIOS→GRUB transition. Increase if GRUB isn't
+                ready when keys are sent.
+
+        config RB_POST_TIMEOUT_MS
+            int "POST timeout (ms)"
+            default 60000
+            help
+                Maximum time to wait for POST to complete.
+    endmenu
+
+    menu "GRUB Boot Menu"
+        config RB_GRUB_WIN_INDEX
+            int "GRUB Windows entry index"
+            default 0
+            help
+                Index of the Windows entry in GRUB menu (0-based).
+
+        config RB_GRUB_FED_INDEX
+            int "GRUB Fedora entry index"
+            default 2
+            help
+                Index of the Fedora entry in GRUB menu (0-based).
+
+        config RB_GRUB_DEFAULT_INDEX
+            int "GRUB default entry index"
+            default 0
+            help
+                Default GRUB entry index when no OS is specified.
+
+        config RB_GRUB_WAIT_MS
+            int "GRUB wait time before key press (ms)"
+            default 3000
+            help
+                Time to wait for GRUB menu to appear before sending keys.
+    endmenu
+
+    menu "BIOS Entry"
+        choice RB_BIOS_KEY
+            prompt "Key to enter BIOS setup"
+            default RB_BIOS_KEY_DEL
+            help
+                Which key to spam during POST to enter BIOS setup.
+
+            config RB_BIOS_KEY_DEL
+                bool "DEL (most motherboards)"
+
+            config RB_BIOS_KEY_F2
+                bool "F2 (some laptops/Intel boards)"
+        endchoice
+
+        config RB_BIOS_SPAM_DURATION_MS
+            int "BIOS key spam duration (ms)"
+            default 8000
+            help
+                How long to repeatedly press the BIOS entry key after
+                power-on. Should cover the entire POST period.
+                8000 ms works for most desktop boards.
+
+        config RB_BIOS_KEY_INTERVAL_MS
+            int "BIOS key press interval (ms)"
+            default 200
+            help
+                Interval between consecutive BIOS setup key presses.
+    endmenu
+
+    menu "Relay Timing"
+        config RB_RELAY_SOFT_PRESS_MS
+            int "Soft power press duration (ms)"
+            default 200
+            help
+                Duration of a short relay press for normal power-on.
+
+        config RB_RELAY_HARD_PRESS_MS
+            int "Hard power press duration (ms)"
+            default 6000
+            help
+                Duration of a long relay press for forced power-off.
+
+        config RB_RELAY_RESET_PRESS_MS
+            int "Reset press duration (ms)"
+            default 200
+            help
+                Duration of the reset button relay press.
+    endmenu
+
+    menu "Campus Network"
+        config RB_CAMPUS_PORTAL_HOST
+            string "Campus portal host"
+            default "172.30.255.42"
+            help
+                IP or hostname of the campus ePortal authentication server.
+
+        config RB_CAMPUS_PORTAL_PORT
+            int "Campus portal port"
+            default 801
+            help
+                TCP port of the campus ePortal.
+
+        config RB_CAMPUS_PING_INTERVAL_S
+            int "Internet check interval (seconds)"
+            default 60
+            help
+                How often to check internet connectivity.
+
+        config RB_CAMPUS_AUTH_RETRY_S
+            int "Auth retry interval (seconds)"
+            default 10
+            help
+                Time to wait before retrying after a failed auth attempt.
+    endmenu
+
+    menu "Default Network Config"
+        config RB_WIFI_SSID
+            string "Default WiFi SSID"
+            default ""
+            help
+                Default WiFi SSID. Leave blank to rely on NVS/API.
+
+        config RB_WIFI_PASS
+            string "Default WiFi Password"
+            default ""
+            help
+                Default WiFi Password. Leave blank if open network or relying on NVS.
+    endmenu
+
+endmenu

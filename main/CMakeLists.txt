@@ -1,0 +1,33 @@
+set(SRCS
+    "main.c"
+    "hal/relay_controller.c"
+    "hal/post_detector.c"
+    "hal/usb_post_detector.c"
+    "hal/usb_hid_keyboard.c"
+    "net/wifi_manager.c"
+    "net/campus_net_auth.c"
+    "net/http_server.c"
+    "app/config_manager.c"
+    "app/system_state.c"
+    "app/boot_manager.c"
+    "app/os_selector.c"
+)
+
+idf_component_register(
+    SRCS ${SRCS}
+    INCLUDE_DIRS "." "hal" "net" "app"
+    REQUIRES
+        nvs_flash
+        esp_wifi
+        esp_http_client
+        esp_http_server
+        spiffs
+        driver
+        esp_driver_gpio
+        esp_timer
+        esp_netif
+        cjson
+        esp_tinyusb
+        freertos
+        log
+)

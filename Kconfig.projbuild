@@ -1,0 +1,114 @@
+menu "RemoteBoot Configuration"
+
+    menu "GPIO Pin Assignment"
+        config RB_GPIO_RELAY1
+            int "Power Button Relay GPIO"
+            default 1
+            range 0 48
+            help
+                GPIO number connected to Relay 1 (power button simulation).
+
+        config RB_GPIO_RELAY2
+            int "Reset Button Relay GPIO"
+            default 2
+            range 0 48
+            help
+                GPIO number connected to Relay 2 (reset button simulation).
+
+        config RB_GPIO_POST_DETECT
+            int "POST Detect (HDD_LED) GPIO"
+            default 3
+            range 0 48
+            help
+                GPIO number connected to JFP1 HDD_LED+ (with 10k voltage divider).
+    endmenu
+
+    menu "Relay Timing (ms)"
+        config RB_RELAY_SOFT_PRESS_MS
+            int "Soft press duration (normal on/off)"
+            default 300
+            help
+                Duration for a momentary press of the power button (ms).
+
+        config RB_RELAY_HARD_PRESS_MS
+            int "Hard press duration (force off)"
+            default 4000
+            help
+                Duration for a long press to force power off (ms).
+
+        config RB_RELAY_RESET_PRESS_MS
+            int "Reset press duration"
+            default 200
+            help
+                Duration for the reset button press (ms).
+    endmenu
+
+    menu "POST Detection"
+        config RB_POST_WARMUP_MS
+            int "POST warmup ignore period (ms)"
+            default 3000
+            help
+                After power-on, ignore HDD_LED signals for this period (ms).
+
+        config RB_POST_QUIET_MS
+            int "HDD_LED quiet threshold for POST complete (ms)"
+            default 1500
+            help
+                If HDD_LED is quiet for this duration, POST is considered complete.
+
+        config RB_POST_TIMEOUT_MS
+            int "POST detection timeout (ms)"
+            default 3600000
+            help
+                Maximum wait time for POST to complete (ms).
+    endmenu
+
+    menu "GRUB / OS Selection"
+        config RB_GRUB_WAIT_MS
+            int "Delay after POST before sending keys (ms)"
+            default 500
+            help
+                Time to wait after POST complete before sending keyboard keys to GRUB.
+
+        config RB_GRUB_WIN_INDEX
+            int "Windows GRUB menu index (0-based)"
+            default 0
+            help
+                Index of Windows entry in GRUB menu.
+
+        config RB_GRUB_FED_INDEX
+            int "Fedora GRUB menu index (0-based)"
+            default 1
+            help
+                Index of Fedora entry in GRUB menu.
+
+        config RB_GRUB_DEFAULT_INDEX
+            int "GRUB default highlighted entry index (0-based)"
+            default 0
+            help
+                Which entry GRUB highlights by default (matches GRUB_DEFAULT value).
+    endmenu
+
+    menu "Campus Network Auth"
+        config RB_CAMPUS_PING_INTERVAL_S
+            int "Network check interval (seconds)"
+            default 300
+            help
+                How often to check internet connectivity (seconds).
+
+        config RB_CAMPUS_AUTH_RETRY_S
+            int "Auth retry interval on failure (seconds)"
+            default 120
+            help
+                Retry interval when authentication fails (seconds).
+
+        config RB_CAMPUS_PORTAL_HOST
+            string "Campus portal host"
+            default "172.30.255.42"
+
+        config RB_CAMPUS_PORTAL_PORT
+            int "Campus portal port"
+            default 801
+    endmenu
+
+endmenu

@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="description" content="ESP32-S3 PC 远程开机控制面板">
+<title>RemoteBoot — 远程开机</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="bg-orbs">
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+</div>
+
+<div class="container">
+  <!-- Header -->
+  <header class="header">
+    <div class="logo">
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="3"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14M4.93 4.93a10 10 0 0 0 0 14.14"/>
+        <path d="M9.56 2.1a10 10 0 0 1 4.88 0M9.56 21.9a10 10 0 0 0 4.88 0"/>
+      </svg>
+      <span>RemoteBoot</span>
+    </div>
+    <div class="header-actions">
+      <div id="wifi-indicator" class="indicator" title="WiFi & 校园网状态">
+        <span class="dot dot-yellow"></span>
+        <span class="indicator-text">检测中...</span>
+      </div>
+      <button class="btn btn-ghost" id="btn-config" onclick="showPage('config')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"/><path d="M12 1v3m0 16v3M4.22 4.22l2.12 2.12m11.32 11.32 2.12 2.12M1 12h3m16 0h3M4.22 19.78l2.12-2.12M17.66 6.34l2.12-2.12"/>
+        </svg>
+        配置
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Page -->
+  <div id="page-main" class="page active">
+
+    <!-- Status Card -->
+    <div class="card status-card">
+      <div class="status-row">
+        <div class="status-pc">
+          <div id="pc-status-dot" class="status-dot status-offline"></div>
+          <div class="status-info">
+            <div class="status-label">主机状态</div>
+            <div id="pc-status-text" class="status-value">离线</div>
+          </div>
+        </div>
+        <div class="status-divider"></div>
+        <div class="status-net">
+          <div id="net-dot" class="status-dot status-unknown"></div>
+          <div class="status-info">
+            <div class="status-label">校园网</div>
+            <div id="net-status-text" class="status-value">未知</div>
+          </div>
+        </div>
+        <div class="status-divider"></div>
+        <div class="status-os">
+          <div class="status-info">
+            <div class="status-label">当前系统</div>
+            <div id="os-text" class="status-value">—</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- OS Selection -->
+    <div class="card" id="boot-section">
+      <h2 class="card-title">开机 / 选择系统</h2>
+      <div class="os-buttons">
+        <button class="btn-os" id="btn-win" onclick="doBoot('windows')" disabled>
+          <svg class="os-icon" viewBox="0 0 88 88" fill="currentColor">
+            <path d="M0 12.402l35.687-4.86.016 34.423-35.67.203zm35.67 33.529.028 34.453L.028 75.48V45.7zm4.326-39.025L87.314 0v41.527l-47.318.376zm47.329 39.349-.011 41.34-47.318-6.678-.066-34.739z"/>
+          </svg>
+          <span>Windows</span>
+        </button>
+        <button class="btn-os btn-os-fedora" id="btn-fed" onclick="doBoot('fedora')" disabled>
+          <svg class="os-icon" viewBox="0 0 100 100" fill="currentColor">
+            <path d="M50 5C25.15 5 5 25.15 5 50s20.15 45 45 45 45-20.15 45-45S74.85 5 50 5zm0 10c13.58 0 25.56 6.23 33.44 16H58.5C46.2 31 36.5 40.7 36.5 53v14.5h-10v13H16.06C10.52 73.16 7.5 61.86 7.5 50 7.5 25.97 26.53 15 50 15zm8.5 16h8c11.05 0 20 8.95 20 20s-8.95 20-20 20H58.5V53c0-7.95 6.55-14.5 14.5-14.5h-6.5V31z"/>
+          </svg>
+          <span>Fedora</span>
+        </button>
+        <button class="btn-os btn-os-default" id="btn-default" onclick="doBoot('default')" disabled>
+          <svg class="os-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8m-4-4v4"/>
+          </svg>
+          <span>默认</span>
+        </button>
+        <button class="btn-os btn-os-bios" id="btn-bios" onclick="doBoot('bios')" disabled>
+          <svg class="os-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="4" width="20" height="16" rx="2"/><path d="M6 8h.01M6 12h.01M6 16h.01M10 8h8M10 12h8M10 16h4"/>
+          </svg>
+          <span>BIOS</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Power Controls -->
+    <div class="card">
+      <h2 class="card-title">电源控制</h2>
+      <div class="power-buttons">
+        <button class="btn btn-danger" id="btn-shutdown" onclick="doAction('shutdown')" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/>
+          </svg>
+          关机
+        </button>
+        <button class="btn btn-warning" id="btn-reboot" onclick="doAction('reboot')" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+          </svg>
+          重启
+        </button>
+        <button class="btn btn-danger-outline" id="btn-force" onclick="confirmForceOff()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+          </svg>
+          强制断电
+        </button>
+      </div>
+    </div>
+
+    <!-- Log -->
+    <div class="card">
+      <div class="card-row">
+        <h2 class="card-title">操作日志</h2>
+        <button class="btn btn-ghost btn-sm" onclick="clearLog()">清空</button>
+      </div>
+      <div id="log" class="log-box"></div>
+    </div>
+  </div>
+
+  <!-- Config Page -->
+  <div id="page-config" class="page">
+    <div class="card">
+      <div class="card-row">
+        <h2 class="card-title">系统配置</h2>
+        <button class="btn btn-ghost" onclick="showPage('main')">← 返回</button>
+      </div>
+
+      <div class="config-section">
+        <h3 class="section-title">WiFi</h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>SSID</label>
+            <input type="text" id="cfg-wifi-ssid" placeholder="WiFi 名称">
+          </div>
+          <div class="form-group">
+            <label>密码</label>
+            <input type="password" id="cfg-wifi-pass" placeholder="留空不修改">
+          </div>
+        </div>
+      </div>
+
+      <div class="config-section">
+        <h3 class="section-title">校园网认证</h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>学号 / 卡号</label>
+            <input type="text" id="cfg-campus-card" placeholder="校园网卡号">
+          </div>
+          <div class="form-group">
+            <label>密码</label>
+            <input type="password" id="cfg-campus-pass" placeholder="留空不修改">
+          </div>
+          <div class="form-group">
+            <label>检测间隔 (秒)</label>
+            <input type="number" id="cfg-ping-interval" min="60" max="3600" placeholder="300">
+          </div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="doAuthNow()">立即触发认证</button>
+      </div>
+
+      <div class="config-section">
+        <h3 class="section-title">GRUB 引导菜单</h3>
+        <p class="section-hint">在 PC 上运行 <code>grep -n "menuentry " /boot/grub2/grub.cfg</code> 查看索引（从 0 开始）</p>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>Windows 菜单索引</label>
+            <input type="number" id="cfg-grub-win" min="0" max="10" placeholder="0">
+          </div>
+          <div class="form-group">
+            <label>Fedora 菜单索引</label>
+            <input type="number" id="cfg-grub-fed" min="0" max="10" placeholder="1">
+          </div>
+          <div class="form-group">
+            <label>GRUB 默认高亮项</label>
+            <input type="number" id="cfg-grub-default" min="0" max="10" placeholder="0">
+          </div>
+          <div class="form-group">
+            <label>POST→发键延迟 (ms)</label>
+            <input type="number" id="cfg-grub-wait" min="100" max="5000" placeholder="500">
+          </div>
+        </div>
+      </div>
+
+      <div class="config-section">
+        <h3 class="section-title">网络</h3>
+        <div class="form-grid">
+          <div class="form-group">
+            <label>PC 局域网 IP</label>
+            <input type="text" id="cfg-pc-ip" placeholder="192.168.1.x (用于在线检测)">
+          </div>
+          <div class="form-group">
+            <label>HDD_LED 静默阈值 (ms)</label>
+            <input type="number" id="cfg-hdd-quiet" min="500" max="10000" placeholder="1500">
+          </div>
+        </div>
+      </div>
+
+      <div class="config-section">
+        <h3 class="section-title">API Token</h3>
+        <div class="form-group">
+          <label>Bearer Token（查看串口输出获取）</label>
+          <div class="token-row">
+            <input type="password" id="cfg-token" placeholder="粘贴 Token">
+            <button class="btn btn-ghost btn-sm" onclick="toggleToken()">显示</button>
+          </div>
+          <span class="hint">Token 保存在浏览器本地，不会上传</span>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="btn btn-primary" id="btn-save-config" onclick="saveConfig()">保存配置</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Confirm Modal -->
+  <div id="modal" class="modal-overlay" onclick="closeModal()">
+    <div class="modal" onclick="event.stopPropagation()">
+      <h3 id="modal-title">确认操作</h3>
+      <p id="modal-body"></p>
+      <div class="modal-actions">
+        <button class="btn btn-ghost" onclick="closeModal()">取消</button>
+        <button class="btn btn-danger" id="modal-confirm">确认</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
