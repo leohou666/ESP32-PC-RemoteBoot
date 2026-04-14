@@ -221,16 +221,11 @@ async function loadConfig() {
     // Token not set yet or not connected
   }
 
-  await loadUpdateInfo();
+  await refreshUpdateInfo();
 }
 
 async function saveConfig() {
-  // Save token to localStorage
-  const newToken = getVal('cfg-token');
-  if (newToken) {
-    token = newToken;
-    localStorage.setItem('rb_token', token);
-  }
+  syncTokenFromInput(true);
 
   const payload = {};
   const s = (k, v) => { if (v !== '') payload[k] = v; };
@@ -261,12 +256,20 @@ async function saveConfig() {
     toast('配置已保存（Token）', 'ok');
   }
 
-  await loadUpdateInfo();
+  await refreshUpdateInfo();
 }
 
 /* ─── Helpers ────────────────────────────────────────────────── */
 function getVal(id) { return (document.getElementById(id)?.value || '').trim(); }
 function setVal(id, v) { const el = document.getElementById(id); if (el && v != null) el.value = v; }
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text;
+}
+function setClassState(id, className, active) {
+  const el = document.getElementById(id);
+  if (el) el.classList.toggle(className, active);
+}
 function formatBytes(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB'];
@@ -279,40 +282,88 @@ function formatBytes(bytes) {
   return `${value.toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
 }
 
-function setUpdateInfoPlaceholder(message) {
-  document.getElementById('fw-version').textContent = '—';
-  document.getElementById('fw-build').textContent = message;
-  document.getElementById('fw-partitions').textContent = '—';
-  document.getElementById('fw-state').textContent = '不可用';
+function setUpdateInfoReadStatus(message, tone = '') {
+  setText('fw-read-status', message);
+  setClassState('fw-read-status', 'is-ok', tone === 'ok');
+  setClassState('fw-read-status', 'is-loading', tone === 'loading');
+  setClassState('fw-read-status', 'is-error', tone === 'error');
+}
+
+function setUpdateInfoVisualState(tone = '') {
+  setClassState('fw-state', 'is-loading', tone === 'loading');
+  setClassState('fw-state', 'is-error', tone === 'error');
+}
+
+function setUpdateInfoLoading() {
+  setText('fw-version', '—');
+  setText('fw-build', '—');
+  setText('fw-partitions', '—');
+  setText('fw-state', '读取中…');
+  setUpdateInfoVisualState('loading');
+  setUpdateInfoReadStatus('正在读取固件信息…', 'loading');
+}
+
+function setUpdateInfoPlaceholder(message, detail = '—') {
+  setText('fw-version', '—');
+  setText('fw-build', detail || '—');
+  setText('fw-partitions', '—');
+  setText('fw-state', message);
+  setUpdateInfoVisualState(message === '读取失败' ? 'error' : '');
+}
+
+function describeUpdateInfoError(err) {
+  if (!err || !err.message) return '读取失败';
+  if (err.message === 'unauthorized') return 'Token 无效或未设置';
+  if (err.message === 'ota_info_failed') return '设备未返回 OTA 信息';
+  return err.message;
+}
+
+function syncTokenFromInput(persist = false) {
+  token = getVal('cfg-token');
+  if (persist) {
+    if (token) localStorage.setItem('rb_token', token);
+    else localStorage.removeItem('rb_token');
+  }
 }
 
 function applyUpdateInfo(info) {
   const version = info.version || '—';
   const state = OTA_STATE_LABELS[info.ota_state] || info.ota_state || '未知';
   const build = [info.project_name, info.build_date, info.build_time, info.idf_ver].filter(Boolean).join(' · ');
+  const partitions = info.update_supported
+    ? `${info.running_partition || '—'} → ${info.next_partition || '—'}`
+    : '当前分区布局不支持 OTA';
+  const now = new Date().toLocaleTimeString('zh-CN', { hour12: false });
 
-  document.getElementById('fw-version').textContent = version;
-  document.getElementById('fw-build').textContent = build || '—';
-  document.getElementById('fw-partitions').textContent =
-    info.update_supported
-      ? `${info.running_partition || '—'} → ${info.next_partition || '—'}`
-      : '当前分区布局不支持 OTA';
-  document.getElementById('fw-state').textContent =
-    info.rollback_pending ? `${state} / 等待验活` : state;
+  setText('fw-version', version);
+  setText('fw-build', build || '—');
+  setText('fw-partitions', partitions);
+  setText('fw-state', info.rollback_pending ? `${state} / 等待验活` : state);
+  setUpdateInfoVisualState('');
+  setUpdateInfoReadStatus(`已于 ${now} 刷新，当前启动分区 ${info.boot_partition || '—'}`, 'ok');
 }
 
 async function loadUpdateInfo() {
   if (!token) {
-    setUpdateInfoPlaceholder('请先配置 Token');
+    setUpdateInfoPlaceholder('未配置 Token');
+    setUpdateInfoReadStatus('填写 Token 后可读取 OTA 信息');
     return;
   }
 
   try {
+    setUpdateInfoLoading();
     const info = await api('GET', '/api/update/info');
     applyUpdateInfo(info);
   } catch (e) {
-    setUpdateInfoPlaceholder('读取失败');
+    const detail = describeUpdateInfoError(e);
+    setUpdateInfoPlaceholder('读取失败', detail);
+    setUpdateInfoReadStatus(detail, 'error');
   }
+}
+
+function refreshUpdateInfo() {
+  syncTokenFromInput(false);
+  return loadUpdateInfo();
 }
 
 function setFirmwareProgress(percent, text) {
@@ -448,8 +499,10 @@ document.addEventListener('DOMContentLoaded', () => {
     token = savedToken;
     document.getElementById('cfg-token').value = savedToken;
   }
+  document.getElementById('cfg-token')?.addEventListener('change', refreshUpdateInfo);
 
   onFirmwareFileSelected();
+  loadUpdateInfo();
   startPolling();
 
   // If no token, hint user

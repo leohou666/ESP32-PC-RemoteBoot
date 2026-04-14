@@ -218,6 +218,16 @@ html, body {
 .token-row input { flex: 1; }
 .hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
 .form-actions { margin-top: 8px; }
+.section-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.firmware-read-status {
+  margin-top: 0;
+}
 
 .firmware-grid {
   display: grid;
@@ -246,6 +256,21 @@ html, body {
   font-size: 12px;
   font-weight: 500;
   color: var(--text-dim);
+}
+.firmware-value.is-loading {
+  color: var(--warning);
+}
+.firmware-value.is-error {
+  color: var(--danger);
+}
+.firmware-read-status.is-ok {
+  color: var(--success);
+}
+.firmware-read-status.is-loading {
+  color: var(--warning);
+}
+.firmware-read-status.is-error {
+  color: var(--danger);
 }
 .file-input {
   background: rgba(0,0,0,0.35);
@@ -284,6 +309,10 @@ html, body {
 }
 @media(max-width:440px) {
   .firmware-grid { grid-template-columns: 1fr; }
+  .section-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
 }
 
 /* ── Modal ───────────────────────────────────────────────────── */

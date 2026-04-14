@@ -218,6 +218,10 @@
       <div class="config-section">
         <h3 class="section-title">固件 OTA</h3>
         <p class="section-hint">上传 <code>remote_boot.bin</code> 后，ESP32 会自动重启并切换到新固件。</p>
+        <div class="section-toolbar">
+          <span class="hint firmware-read-status" id="fw-read-status">尚未读取固件信息</span>
+          <button class="btn btn-ghost btn-sm" type="button" onclick="refreshUpdateInfo()">刷新信息</button>
+        </div>
         <div class="firmware-grid">
           <div class="firmware-item">
             <div class="firmware-label">当前版本</div>
