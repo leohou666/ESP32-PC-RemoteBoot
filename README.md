@@ -12,6 +12,7 @@
 | 📡 **POST 检测** | 监测硬盘灯（HDD LED）信号，自动判断 POST 自检是否完成 |
 | 🌐 **校园网自动认证** | 定期检测互联网连通性，断网时自动发送 ePortal 认证请求 |
 | 🎛️ **Web UI** | 内置响应式 Web 控制面板，手机/电脑浏览器均可操作 |
+| 🚀 **HTTP OTA** | 通过 Web UI 或 REST API 上传 `.bin` 固件，自动切换 OTA 分区并重启 |
 | 🔐 **API Token 认证** | 首次启动自动生成随机 API Token，所有写操作需 Bearer 认证 |
 | ⚙️ **NVS 配置持久化** | WiFi、校园网账号、GRUB 索引等全部通过 NVS 存储，支持 API 热更新 |
 
@@ -61,7 +62,7 @@ ESP32-S3                    主板 JFP1 跳线
 distrobox enter esp && bash
 
 # 激活 IDF 环境变量
-. $HOME/.espressif/frameworks/esp-idf-v6.0/export.sh
+. $HOME/.espressif/v6.0/esp-idf/export.sh
 
 # 编译
 idf.py build
@@ -76,6 +77,8 @@ idf.py -p /dev/ttyACM0 flash
 # 查看串口日志
 idf.py -p /dev/ttyACM0 monitor
 ```
+
+> **首次迁移说明**：本项目现在使用 `ota_0/ota_1 + otadata` 双分区布局。已经刷过旧版 `factory + spiffs` 固件的设备，必须先通过串口完整刷入一次 `bootloader + partition-table + app`，之后才能使用 OTA。
 
 > 如果遇到串口权限问题，在**宿主机**上执行：
 > ```bash
@@ -136,6 +139,7 @@ Web UI 提供以下操作按钮：
 - **重启** — 按复位键
 - **重启到指定系统** — 复位 + 等待 POST + GRUB 选择
 - **BIOS** — 开机或重启时自动按 DEL/F2 进入 BIOS 设置
+- **固件 OTA** — 上传 `remote_boot.bin` 后自动升级并重启
 
 ### 4. 校园网配置（可选）
 
@@ -179,6 +183,13 @@ curl -X PUT http://<ESP_IP>/api/config \
 | `GET` | `/api/config` | ✅ | 获取当前配置（密码脱敏） |
 | `PUT` | `/api/config` | ✅ | 更新配置项 |
 
+### 固件升级
+
+| 方法 | 路径 | 认证 | Body | 说明 |
+|---|---|---|---|---|
+| `GET` | `/api/update/info` | ✅ | — | 获取当前固件版本、分区和 OTA 状态 |
+| `POST` | `/api/update` | ✅ | raw `.bin` | 上传固件到空闲 OTA 分区，成功后自动重启 |
+
 ### 校园网
 
 | 方法 | 路径 | 认证 | 说明 |
@@ -221,6 +232,16 @@ curl -X POST http://$ESP/api/reboot_os \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"os":"bios"}'
+
+# 查看 OTA 状态
+curl http://$ESP/api/update/info \
+  -H "Authorization: Bearer $TOKEN"
+
+# 上传新固件并触发重启
+curl -X POST http://$ESP/api/update \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @build/remote_boot.bin
 ```
 
 ## 📂 项目结构
@@ -247,8 +268,9 @@ ESP32-PC-RemoteBoot/
 │   │   ├── config_manager.c    # NVS 配置读写
 │   │   ├── system_state.c      # 全局状态管理
 │   │   ├── os_selector.c       # GRUB 键盘选择逻辑
-│   │   └── boot_manager.c      # 开机流程状态机
-│   └── web/                    # Web UI (SPIFFS)
+│   │   ├── boot_manager.c      # 开机流程状态机
+│   │   └── ota_manager.c       # OTA 分区写入与状态查询
+│   └── web/                    # Web UI（嵌入 app 镜像）
 │       ├── index.html
 │       ├── style.css
 │       └── app.js

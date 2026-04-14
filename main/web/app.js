@@ -5,6 +5,7 @@ let token = localStorage.getItem('rb_token') || '';
 let currentPage = 'main';
 let pollTimer = null;
 let currentPcState = 'offline';
+let uploadInFlight = false;
 
 /* ─── Toast ──────────────────────────────────────────────────── */
 function toast(msg, type = 'info') {
@@ -76,6 +77,15 @@ const NET_STATE_LABELS = {
   error:       '认证失败',
 };
 const OS_LABELS = { unknown: '—', windows: 'Windows', fedora: 'Fedora 43' };
+const OTA_STATE_LABELS = {
+  pending_verify: '待确认',
+  valid: '已确认',
+  new: '新镜像',
+  invalid: '无效',
+  aborted: '已回滚',
+  undefined: '未跟踪',
+  unknown: '未知',
+};
 
 function applyStatus(st) {
   // PC dot
@@ -210,6 +220,8 @@ async function loadConfig() {
   } catch(e) {
     // Token not set yet or not connected
   }
+
+  await loadUpdateInfo();
 }
 
 async function saveConfig() {
@@ -248,11 +260,156 @@ async function saveConfig() {
   } else {
     toast('配置已保存（Token）', 'ok');
   }
+
+  await loadUpdateInfo();
 }
 
 /* ─── Helpers ────────────────────────────────────────────────── */
 function getVal(id) { return (document.getElementById(id)?.value || '').trim(); }
 function setVal(id, v) { const el = document.getElementById(id); if (el && v != null) el.value = v; }
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let idx = 0;
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024;
+    idx++;
+  }
+  return `${value.toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
+}
+
+function setUpdateInfoPlaceholder(message) {
+  document.getElementById('fw-version').textContent = '—';
+  document.getElementById('fw-build').textContent = message;
+  document.getElementById('fw-partitions').textContent = '—';
+  document.getElementById('fw-state').textContent = '不可用';
+}
+
+function applyUpdateInfo(info) {
+  const version = info.version || '—';
+  const state = OTA_STATE_LABELS[info.ota_state] || info.ota_state || '未知';
+  const build = [info.project_name, info.build_date, info.build_time, info.idf_ver].filter(Boolean).join(' · ');
+
+  document.getElementById('fw-version').textContent = version;
+  document.getElementById('fw-build').textContent = build || '—';
+  document.getElementById('fw-partitions').textContent =
+    info.update_supported
+      ? `${info.running_partition || '—'} → ${info.next_partition || '—'}`
+      : '当前分区布局不支持 OTA';
+  document.getElementById('fw-state').textContent =
+    info.rollback_pending ? `${state} / 等待验活` : state;
+}
+
+async function loadUpdateInfo() {
+  if (!token) {
+    setUpdateInfoPlaceholder('请先配置 Token');
+    return;
+  }
+
+  try {
+    const info = await api('GET', '/api/update/info');
+    applyUpdateInfo(info);
+  } catch (e) {
+    setUpdateInfoPlaceholder('读取失败');
+  }
+}
+
+function setFirmwareProgress(percent, text) {
+  const fill = document.getElementById('fw-progress-fill');
+  const label = document.getElementById('fw-progress-text');
+  if (fill) fill.style.width = `${Math.max(0, Math.min(100, percent))}%`;
+  if (label) label.textContent = text;
+}
+
+function setFirmwareUploadBusy(busy) {
+  uploadInFlight = busy;
+  document.getElementById('btn-upload-fw').disabled = busy;
+  document.getElementById('fw-file').disabled = busy;
+}
+
+function onFirmwareFileSelected() {
+  const file = document.getElementById('fw-file')?.files?.[0];
+  const meta = document.getElementById('fw-file-meta');
+  if (!meta) return;
+
+  if (!file) {
+    meta.textContent = '未选择文件';
+    setFirmwareProgress(0, '待上传');
+    return;
+  }
+
+  meta.textContent = `${file.name} · ${formatBytes(file.size)}`;
+  setFirmwareProgress(0, '待上传');
+}
+
+function uploadFirmware() {
+  if (!token) {
+    toast('请先设置 API Token', 'error');
+    return;
+  }
+  if (uploadInFlight) return;
+
+  const file = document.getElementById('fw-file')?.files?.[0];
+  if (!file) {
+    toast('请先选择固件文件', 'error');
+    return;
+  }
+
+  openModal(
+    '确认 OTA 升级',
+    `将上传 ${file.name}（${formatBytes(file.size)}），设备随后会自动重启。确认继续？`,
+    () => startFirmwareUpload(file)
+  );
+}
+
+function startFirmwareUpload(file) {
+  setFirmwareUploadBusy(true);
+  setFirmwareProgress(1, '开始上传…');
+  addLog(`开始 OTA 上传: ${file.name} (${formatBytes(file.size)})`, 'log-warn');
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/update');
+  xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+  xhr.upload.onprogress = (evt) => {
+    if (!evt.lengthComputable) return;
+    const percent = Math.max(1, Math.round((evt.loaded / evt.total) * 100));
+    setFirmwareProgress(percent, `上传中 ${percent}%`);
+  };
+
+  xhr.onload = async () => {
+    setFirmwareUploadBusy(false);
+
+    let data = {};
+    try { data = JSON.parse(xhr.responseText || '{}'); } catch (_) {}
+
+    if (xhr.status >= 200 && xhr.status < 300) {
+      setFirmwareProgress(100, '上传完成，设备正在重启…');
+      toast('固件已写入，设备正在重启', 'ok');
+      addLog('OTA 上传完成，等待设备重启', 'log-ok');
+      setTimeout(() => loadUpdateInfo(), 8000);
+      return;
+    }
+
+    const msg = data.error || `HTTP ${xhr.status}`;
+    setFirmwareProgress(0, `升级失败: ${msg}`);
+    toast(`升级失败: ${msg}`, 'error');
+    addLog(`OTA 上传失败: ${msg}`, 'log-err');
+    await loadUpdateInfo();
+  };
+
+  xhr.onerror = async () => {
+    setFirmwareUploadBusy(false);
+    setFirmwareProgress(0, '连接中断');
+    toast('上传中断，请检查网络后重试', 'error');
+    addLog('OTA 上传中断', 'log-err');
+    await loadUpdateInfo();
+  };
+
+  xhr.send(file);
+}
 
 function toggleToken() {
   const inp = document.getElementById('cfg-token');
@@ -292,6 +449,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('cfg-token').value = savedToken;
   }
 
+  onFirmwareFileSelected();
   startPolling();
 
   // If no token, hint user

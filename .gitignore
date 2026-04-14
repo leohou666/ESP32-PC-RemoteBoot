@@ -1,4 +1,5 @@
 sdkconfig*
+!sdkconfig.defaults
 build/
 .agents/
 .cache/

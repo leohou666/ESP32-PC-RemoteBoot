@@ -34,6 +34,7 @@
 #include "http_server.h"
 #include "os_selector.h"
 #include "boot_manager.h"
+#include "ota_manager.h"
 
 /* Kconfig-defined defaults */
 #include "sdkconfig.h"
@@ -69,11 +70,11 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     ESP_ERROR_CHECK(system_state_init());
     ESP_ERROR_CHECK(config_ensure_api_token());
+    ESP_ERROR_CHECK(ota_manager_init());
 
     /* ── 2. HAL: Relay controller ──────────────────────────────── */
     uint8_t gpio_r1 = config_get_u8(CFG_KEY_GPIO_RELAY1, CONFIG_RB_GPIO_RELAY1);
     uint8_t gpio_r2 = config_get_u8(CFG_KEY_GPIO_RELAY2, CONFIG_RB_GPIO_RELAY2);
-    uint8_t gpio_post = config_get_u8(CFG_KEY_GPIO_POST, CONFIG_RB_GPIO_POST_DETECT);
 
     IRelayController *relay = NULL;
     ESP_ERROR_CHECK(relay_controller_create(gpio_r1, gpio_r2, &relay));
@@ -98,6 +99,7 @@ void app_main(void)
     ESP_ERROR_CHECK(usb_post_detector_create(&upost_cfg, &post_det));
 #else
     ESP_LOGI(TAG, "POST detection mode: HDD LED GPIO");
+    uint8_t gpio_post = config_get_u8(CFG_KEY_GPIO_POST, CONFIG_RB_GPIO_POST_DETECT);
     post_detector_config_t post_cfg = {
         .gpio_hdd_led    = gpio_post,
         .warmup_ms       = config_get_u16("post_warmup", CONFIG_RB_POST_WARMUP_MS),
@@ -171,6 +173,11 @@ void app_main(void)
         .boot_mgr = boot_mgr,
     };
     ESP_ERROR_CHECK(http_server_start(&http_deps));
+
+    esp_err_t ota_err = ota_manager_mark_running_app_valid();
+    if (ota_err != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to confirm running OTA image: %s", esp_err_to_name(ota_err));
+    }
 
     /* ── Done ────────────────────────────────────────────────── */
     ESP_LOGI(TAG, "RemoteBoot ready. Connect to WiFi and navigate to:");

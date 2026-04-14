@@ -1,26 +1,37 @@
 /**
  * @file http_server.c
- * @brief REST API server + SPIFFS static file serving.
+ * @brief REST API server + app-embedded static file serving.
  */
 #include "http_server.h"
 #include "system_state.h"
 #include "config_manager.h"
 #include "campus_net_auth.h"
 #include "boot_manager.h"
+#include "ota_manager.h"
 #include "wifi_manager.h"
 
 #include <string.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "esp_http_server.h"
-#include "esp_spiffs.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "cJSON.h"
 
 #define TAG "http"
 
 static httpd_handle_t    s_server = NULL;
 static http_server_deps_t s_deps  = {0};
+
+extern const uint8_t _binary_index_html_start[] asm("_binary_index_html_start");
+extern const uint8_t _binary_index_html_end[]   asm("_binary_index_html_end");
+extern const uint8_t _binary_style_css_start[]  asm("_binary_style_css_start");
+extern const uint8_t _binary_style_css_end[]    asm("_binary_style_css_end");
+extern const uint8_t _binary_app_js_start[]     asm("_binary_app_js_start");
+extern const uint8_t _binary_app_js_end[]       asm("_binary_app_js_end");
 
 /* ─────────────────────────────────────────────────────────────────── */
 /* Auth helper                                                           */
@@ -55,6 +66,51 @@ static esp_err_t send_json(httpd_req_t *req, const char *json)
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_sendstr(req, json);
     return ESP_OK;
+}
+
+static esp_err_t send_json_error(httpd_req_t *req, const char *error, esp_err_t detail)
+{
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "error", error);
+    if (detail != ESP_OK) {
+        cJSON_AddStringToObject(root, "detail", esp_err_to_name(detail));
+    }
+    char *json = cJSON_PrintUnformatted(root);
+    esp_err_t err = send_json(req, json);
+    free(json);
+    cJSON_Delete(root);
+    return err;
+}
+
+static size_t embedded_len(const uint8_t *start, const uint8_t *end)
+{
+    size_t len = (size_t)(end - start);
+    if (len > 0 && end[-1] == '\0') {
+        len--;
+    }
+    return len;
+}
+
+static esp_err_t serve_embedded_file(httpd_req_t *req,
+                                     const uint8_t *start,
+                                     const uint8_t *end,
+                                     const char *content_type)
+{
+    httpd_resp_set_type(req, content_type);
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    return httpd_resp_send(req, (const char *)start, (int)embedded_len(start, end));
+}
+
+static void restart_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(750));
+    esp_restart();
+}
+
+static void schedule_restart(void)
+{
+    xTaskCreate(restart_task, "esp_restart", 2048, NULL, 5, NULL);
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
@@ -297,6 +353,115 @@ static esp_err_t handler_netstat(httpd_req_t *req)
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
+/* GET /api/update/info                                                 */
+/* ─────────────────────────────────────────────────────────────────── */
+static esp_err_t handler_update_info(httpd_req_t *req)
+{
+    if (!check_token(req)) return send_unauthorized(req);
+
+    ota_runtime_info_t info;
+    esp_err_t err = ota_manager_get_runtime_info(&info);
+    if (err != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return send_json_error(req, "ota_info_failed", err);
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "update_supported", info.update_supported);
+    cJSON_AddBoolToObject(root, "rollback_pending", info.rollback_pending);
+    cJSON_AddStringToObject(root, "project_name", info.project_name);
+    cJSON_AddStringToObject(root, "version", info.version);
+    cJSON_AddStringToObject(root, "idf_ver", info.idf_ver);
+    cJSON_AddStringToObject(root, "build_date", info.build_date);
+    cJSON_AddStringToObject(root, "build_time", info.build_time);
+    cJSON_AddStringToObject(root, "running_partition", info.running_partition);
+    cJSON_AddStringToObject(root, "boot_partition", info.boot_partition);
+    cJSON_AddStringToObject(root, "next_partition", info.next_partition);
+    cJSON_AddStringToObject(root, "ota_state", info.ota_state);
+
+    char *json = cJSON_PrintUnformatted(root);
+    send_json(req, json);
+    free(json);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
+
+/* ─────────────────────────────────────────────────────────────────── */
+/* POST /api/update                                                     */
+/* ─────────────────────────────────────────────────────────────────── */
+static esp_err_t handler_update(httpd_req_t *req)
+{
+    if (!check_token(req)) return send_unauthorized(req);
+
+    if (req->content_len <= 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        return send_json_error(req, "empty_firmware", ESP_ERR_INVALID_SIZE);
+    }
+
+    char content_type[64] = {0};
+    if (httpd_req_get_hdr_value_str(req, "Content-Type",
+                                    content_type, sizeof(content_type)) == ESP_OK) {
+        if (strncmp(content_type, "application/octet-stream", 24) != 0) {
+            httpd_resp_set_status(req, "415 Unsupported Media Type");
+            return send_json_error(req, "unsupported_content_type", ESP_ERR_INVALID_ARG);
+        }
+    }
+
+    ota_session_t session;
+    esp_err_t err = ota_manager_begin(&session, (size_t)req->content_len);
+    if (err == ESP_ERR_INVALID_STATE) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return send_json_error(req, "ota_busy", err);
+    }
+    if (err == ESP_ERR_OTA_ROLLBACK_INVALID_STATE) {
+        httpd_resp_set_status(req, "409 Conflict");
+        return send_json_error(req, "ota_pending_verify", err);
+    }
+    if (err != ESP_OK) {
+        httpd_resp_set_status(req, "500 Internal Server Error");
+        return send_json_error(req, "ota_begin_failed", err);
+    }
+
+    uint8_t buf[4096];
+    int remaining = req->content_len;
+
+    while (remaining > 0) {
+        int want = remaining < (int)sizeof(buf) ? remaining : (int)sizeof(buf);
+        int received = httpd_req_recv(req, (char *)buf, want);
+        if (received == HTTPD_SOCK_ERR_TIMEOUT) {
+            continue;
+        }
+        if (received <= 0) {
+            ota_manager_abort(&session);
+            httpd_resp_set_status(req, "400 Bad Request");
+            return send_json_error(req, "upload_interrupted", ESP_FAIL);
+        }
+
+        err = ota_manager_write(&session, buf, (size_t)received);
+        if (err != ESP_OK) {
+            ota_manager_abort(&session);
+            httpd_resp_set_status(req, "500 Internal Server Error");
+            return send_json_error(req, "ota_write_failed", err);
+        }
+
+        remaining -= received;
+    }
+
+    err = ota_manager_finish(&session);
+    if (err != ESP_OK) {
+        httpd_resp_set_status(req,
+            err == ESP_ERR_OTA_VALIDATE_FAILED ? "400 Bad Request" : "500 Internal Server Error");
+        return send_json_error(req, "ota_finalize_failed", err);
+    }
+
+    err = send_json(req, "{\"status\":\"uploaded\",\"rebooting\":true}");
+    if (err == ESP_OK) {
+        schedule_restart();
+    }
+    return err;
+}
+
+/* ─────────────────────────────────────────────────────────────────── */
 /* POST /api/auth_now                                                    */
 /* ─────────────────────────────────────────────────────────────────── */
 static esp_err_t handler_auth_now(httpd_req_t *req)
@@ -319,33 +484,31 @@ static esp_err_t handler_options(httpd_req_t *req)
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
-/* Serve static files from SPIFFS                                       */
+/* Serve static files embedded in the app image                         */
 /* ─────────────────────────────────────────────────────────────────── */
-static esp_err_t serve_file(httpd_req_t *req, const char *filepath, const char *content_type)
+static esp_err_t handler_root(httpd_req_t *req)
 {
-    FILE *f = fopen(filepath, "r");
-    if (!f) {
-        httpd_resp_set_status(req, "404 Not Found");
-        httpd_resp_sendstr(req, "File not found. Flash SPIFFS image.");
-        return ESP_OK;
-    }
-    httpd_resp_set_type(req, content_type);
-    /* For JS/CSS, add cache controls to improve load times */
-    httpd_resp_set_hdr(req, "Cache-Control", "public, max-age=31536000");
-
-    char buf[512];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), f)) > 0) {
-        httpd_resp_send_chunk(req, buf, n);
-    }
-    fclose(f);
-    httpd_resp_send_chunk(req, NULL, 0);
-    return ESP_OK;
+    return serve_embedded_file(req,
+                               _binary_index_html_start,
+                               _binary_index_html_end,
+                               "text/html; charset=utf-8");
 }
 
-static esp_err_t handler_root(httpd_req_t *req)  { return serve_file(req, "/spiffs/index.html", "text/html"); }
-static esp_err_t handler_style(httpd_req_t *req) { return serve_file(req, "/spiffs/style.css", "text/css"); }
-static esp_err_t handler_app(httpd_req_t *req)   { return serve_file(req, "/spiffs/app.js", "application/javascript"); }
+static esp_err_t handler_style(httpd_req_t *req)
+{
+    return serve_embedded_file(req,
+                               _binary_style_css_start,
+                               _binary_style_css_end,
+                               "text/css; charset=utf-8");
+}
+
+static esp_err_t handler_app(httpd_req_t *req)
+{
+    return serve_embedded_file(req,
+                               _binary_app_js_start,
+                               _binary_app_js_end,
+                               "application/javascript; charset=utf-8");
+}
 
 /* ─────────────────────────────────────────────────────────────────── */
 
@@ -358,23 +521,11 @@ esp_err_t http_server_start(const http_server_deps_t *deps)
 {
     s_deps = *deps;
 
-    /* Mount SPIFFS */
-    esp_vfs_spiffs_conf_t spiffs_cfg = {
-        .base_path       = "/spiffs",
-        .partition_label = "spiffs",
-        .max_files       = 5,
-        .format_if_mount_failed = true,
-    };
-    esp_err_t err = esp_vfs_spiffs_register(&spiffs_cfg);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "SPIFFS mount failed: %s (web UI unavailable)", esp_err_to_name(err));
-    }
-
     httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
     cfg.server_port      = 80;
-    cfg.max_uri_handlers = 32;
+    cfg.max_uri_handlers = 36;
 
-    err = httpd_start(&s_server, &cfg);
+    esp_err_t err = httpd_start(&s_server, &cfg);
     if (err != ESP_OK) return err;
 
     /* Static web UI */
@@ -389,6 +540,8 @@ esp_err_t http_server_start(const http_server_deps_t *deps)
     REGISTER(HTTP_POST, "/api/force_off", handler_force_off);
     REGISTER(HTTP_POST, "/api/reboot",    handler_reboot);
     REGISTER(HTTP_POST, "/api/reboot_os", handler_reboot_os);
+    REGISTER(HTTP_GET,  "/api/update/info", handler_update_info);
+    REGISTER(HTTP_POST, "/api/update",      handler_update);
     REGISTER(HTTP_GET,  "/api/config",    handler_config_get);
     REGISTER(HTTP_PUT,  "/api/config",    handler_config_put);
     REGISTER(HTTP_GET,  "/api/netstat",   handler_netstat);
@@ -401,6 +554,8 @@ esp_err_t http_server_start(const http_server_deps_t *deps)
     REGISTER(HTTP_OPTIONS, "/api/force_off", handler_options);
     REGISTER(HTTP_OPTIONS, "/api/reboot",    handler_options);
     REGISTER(HTTP_OPTIONS, "/api/reboot_os", handler_options);
+    REGISTER(HTTP_OPTIONS, "/api/update/info", handler_options);
+    REGISTER(HTTP_OPTIONS, "/api/update",      handler_options);
     REGISTER(HTTP_OPTIONS, "/api/auth_now",  handler_options);
 
     ESP_LOGI(TAG, "HTTP server started on port %d", cfg.server_port);
@@ -413,5 +568,4 @@ void http_server_stop(void)
         httpd_stop(s_server);
         s_server = NULL;
     }
-    esp_vfs_spiffs_unregister("spiffs");
 }

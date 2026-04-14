@@ -11,6 +11,7 @@ set(SRCS
     "app/system_state.c"
     "app/boot_manager.c"
     "app/os_selector.c"
+    "app/ota_manager.c"
 )
 
 idf_component_register(
@@ -21,13 +22,18 @@ idf_component_register(
         esp_wifi
         esp_http_client
         esp_http_server
-        spiffs
         driver
         esp_driver_gpio
         esp_timer
         esp_netif
+        app_update
+        esp_app_format
         cjson
         esp_tinyusb
         freertos
         log
+    EMBED_TXTFILES
+        "web/index.html"
+        "web/style.css"
+        "web/app.js"
 )

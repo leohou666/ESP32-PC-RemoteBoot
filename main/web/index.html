@@ -216,6 +216,41 @@
       </div>
 
       <div class="config-section">
+        <h3 class="section-title">固件 OTA</h3>
+        <p class="section-hint">上传 <code>remote_boot.bin</code> 后，ESP32 会自动重启并切换到新固件。</p>
+        <div class="firmware-grid">
+          <div class="firmware-item">
+            <div class="firmware-label">当前版本</div>
+            <div class="firmware-value" id="fw-version">—</div>
+          </div>
+          <div class="firmware-item">
+            <div class="firmware-label">运行状态</div>
+            <div class="firmware-value" id="fw-state">未读取</div>
+          </div>
+          <div class="firmware-item">
+            <div class="firmware-label">构建信息</div>
+            <div class="firmware-value firmware-value-sm" id="fw-build">—</div>
+          </div>
+          <div class="firmware-item">
+            <div class="firmware-label">分区切换</div>
+            <div class="firmware-value firmware-value-sm" id="fw-partitions">—</div>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>固件文件 (.bin)</label>
+          <input type="file" id="fw-file" class="file-input" accept=".bin,application/octet-stream" onchange="onFirmwareFileSelected()">
+          <span class="hint" id="fw-file-meta">未选择文件</span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill" id="fw-progress-fill"></div>
+        </div>
+        <div class="hint" id="fw-progress-text">待上传</div>
+        <div class="form-actions">
+          <button class="btn btn-primary" id="btn-upload-fw" onclick="uploadFirmware()">上传并升级</button>
+        </div>
+      </div>
+
+      <div class="config-section">
         <h3 class="section-title">API Token</h3>
         <div class="form-group">
           <label>Bearer Token（查看串口输出获取）</label>
