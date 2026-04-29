@@ -72,27 +72,10 @@ function applyLogFilter() {
 }
 
 function renderLogEntries() {
-  const box = document.getElementById('log-system-entries');
-  if (!box) return;
-  const filter = (document.getElementById('log-filter')?.value || '').toLowerCase();
-  const lvlFilter = document.getElementById('log-lvl-filter')?.value || '*';
-
-  const lvlClass = { E: 'log-err', W: 'log-warn', I: '', D: 'log-debug', V: 'log-debug' };
-  let html = '';
-  for (const e of sysLogEntries) {
-    if (lvlFilter !== '*' && String.fromCharCode(e.lvl) !== lvlFilter) continue;
-    const text = (e.tag + ' ' + e.msg).toLowerCase();
-    if (filter && text.indexOf(filter) === -1) continue;
-
-    const ts = new Date(e.ts);
-    const time = ts.toLocaleTimeString('zh-CN', { hour12: false });
-    const cls = lvlClass[String.fromCharCode(e.lvl)] || '';
-    const tagEsc = escHtml(e.tag);
-    const msgEsc = escHtml(e.msg);
-    html += `<div class="log-entry"><span class="log-time">${time}</span><span class="${cls}">[${String.fromCharCode(e.lvl)}] ${tagEsc}: ${msgEsc}</span></div>`;
+  renderEntriesToBox('log-system-entries', 'log-filter', 'log-lvl-filter');
+  if (document.getElementById('log-modal').style.display !== 'none') {
+    renderEntriesToBox('log-modal-entries', 'log-filter-modal', 'log-lvl-filter-modal');
   }
-  box.innerHTML = html || '<div class="log-entry"><span class="log-time">—</span>暂无匹配日志</div>';
-  box.scrollTop = box.scrollHeight;
 }
 
 function escHtml(s) {
@@ -109,6 +92,8 @@ function switchLogTab(tab) {
   const btnClear = document.getElementById('btn-log-clear');
   const btnRefresh = document.getElementById('btn-log-refresh');
 
+  const btnFullscreen = document.getElementById('btn-log-fullscreen');
+
   if (tab === 'system') {
     sysLogActive = true;
     tabAction.classList.remove('active');
@@ -117,6 +102,7 @@ function switchLogTab(tab) {
     boxSystem.style.display = '';
     btnRefresh.style.display = '';
     btnClear.style.display = '';
+    btnFullscreen.style.display = '';
     refreshSystemLog();
     sysLogTimer = setInterval(refreshSystemLog, 5000);
   } else {
@@ -127,8 +113,43 @@ function switchLogTab(tab) {
     boxAction.style.display = '';
     btnRefresh.style.display = 'none';
     btnClear.style.display = '';
+    btnFullscreen.style.display = 'none';
     if (sysLogTimer) { clearInterval(sysLogTimer); sysLogTimer = null; }
   }
+}
+
+function renderEntriesToBox(boxId, filterId, lvlFilterId) {
+  const box = document.getElementById(boxId);
+  if (!box) return;
+  const filter = (document.getElementById(filterId)?.value || '').toLowerCase();
+  const lvlFilter = document.getElementById(lvlFilterId)?.value || '*';
+  const lvlClass = { E: 'log-err', W: 'log-warn', I: '', D: 'log-debug', V: 'log-debug' };
+  let html = '';
+  for (const e of sysLogEntries) {
+    if (!e.tag && !e.msg) continue;
+    if (lvlFilter !== '*' && String.fromCharCode(e.lvl) !== lvlFilter) continue;
+    const text = (e.tag + ' ' + e.msg).toLowerCase();
+    if (filter && text.indexOf(filter) === -1) continue;
+    const time = new Date(e.ts).toLocaleTimeString('zh-CN', { hour12: false });
+    const cls = lvlClass[String.fromCharCode(e.lvl)] || '';
+    html += `<div class="log-entry"><span class="log-time">${time}</span><span class="${cls}">[${String.fromCharCode(e.lvl)}] ${escHtml(e.tag)}: ${escHtml(e.msg)}</span></div>`;
+  }
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  box.innerHTML = html || '<div class="log-entry"><span class="log-time">—</span>暂无匹配日志</div>';
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function openLogModal() {
+  document.getElementById('log-modal').style.display = 'flex';
+  renderEntriesToBox('log-modal-entries', 'log-filter-modal', 'log-lvl-filter-modal');
+}
+
+function closeLogModal() {
+  document.getElementById('log-modal').style.display = 'none';
+}
+
+function applyLogFilterModal() {
+  renderEntriesToBox('log-modal-entries', 'log-filter-modal', 'log-lvl-filter-modal');
 }
 
 /* ─── API calls ──────────────────────────────────────────────── */
@@ -278,6 +299,24 @@ function confirmForceOff() {
         toast('已强制断电', 'ok');
       } catch (e) {
         toast('失败: ' + e.message, 'error');
+      }
+    }
+  );
+}
+
+function confirmResetState() {
+  openModal(
+    '重置主机状态',
+    '将主机状态强制重置为「离线」，用于手动开机后同步 ESP32 状态。确认继续？',
+    async () => {
+      addLog('状态重置命令已发送', 'log-warn');
+      try {
+        await api('POST', '/api/reset_state');
+        toast('状态已重置为离线', 'ok');
+        pollStatus();
+      } catch (e) {
+        toast('重置失败: ' + e.message, 'error');
+        addLog('重置状态失败: ' + e.message, 'log-err');
       }
     }
   );

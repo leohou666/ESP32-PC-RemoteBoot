@@ -20,7 +20,6 @@
 extern "C" {
 #endif
 
-#define LOG_ENTRY_SIZE   128
 #define LOG_MSG_MAX      112
 #define LOG_TAG_MAX      8    /* stored as 7 chars + 1 null pad */
 

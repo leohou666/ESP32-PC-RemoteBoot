@@ -18,6 +18,7 @@
 #include "freertos/task.h"
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "inttypes.h"
 #include "esp_netif.h"
 #include "esp_event.h"
@@ -29,6 +30,7 @@
 #include "post_detector.h"
 #include "usb_post_detector.h"
 #include "usb_hid_keyboard.h"
+#include "tinyusb.h"
 #include "wifi_manager.h"
 #include "campus_net_auth.h"
 #include "http_server.h"
@@ -56,6 +58,64 @@
 #else
   #define RB_DEF_BOOTLOADER_TYPE 0
 #endif
+
+/* ─────────────────────────────────────────────────────────────────── */
+/* USB ↔ PC state auto-sync (polling-based)                              */
+/*                                                                        */
+/* Polls TinyUSB device state every 3 s.  Uses BOTH tud_mounted() AND     */
+/* tud_suspended() because many desktop PCs keep USB VBUS powered during  */
+/* soft-off — so unplug never fires and cfg_num never clears.  When the   */
+/* PC shuts down, the host stops sending SOF; the device enters suspend   */
+/* within 3 ms.  A sustained suspend (3 consecutive polls = 9 s) is       */
+/* treated as "PC off".                                                   */
+/*                                                                        */
+/* Only acts on OFFLINE ↔ ONLINE edges — never interferes with active     */
+/* boot sequences (POWERING_ON / POST_RUNNING / SELECTING_OS).            */
+/* ─────────────────────────────────────────────────────────────────── */
+#define USB_SYNC_INTERVAL_S   3
+#define SUSPEND_DEBOUNCE_MAX  3   /* 3 × 3 s = 9 s sustained suspend → off */
+
+static int s_suspend_debounce = 0;
+
+static void usb_sync_timer_cb(void *arg)
+{
+    bool active  = tud_mounted() && !tud_suspended();  /* PC alive, bus active */
+    bool susp    = tud_suspended();                     /* bus idle (host gone) */
+    pc_state_t st = system_state_pc();
+
+    if (active && st == PC_STATE_OFFLINE) {
+        s_suspend_debounce = 0;
+        ESP_LOGI(TAG, "USB active but state is OFFLINE — PC must be online");
+        system_state_set_pc(PC_STATE_ONLINE);
+        system_state_set_os(BOOTED_OS_UNKNOWN);
+        return;
+    }
+
+    if (!active && st == PC_STATE_ONLINE) {
+        /* Immediate: unmount / cable unplug */
+        s_suspend_debounce = 0;
+        ESP_LOGI(TAG, "USB unmounted while ONLINE — PC must be offline");
+        system_state_set_pc(PC_STATE_OFFLINE);
+        system_state_set_os(BOOTED_OS_UNKNOWN);
+        return;
+    }
+
+    /* Suspended while ONLINE: host may have gone away (PC soft-off) */
+    if (susp && st == PC_STATE_ONLINE) {
+        s_suspend_debounce++;
+        if (s_suspend_debounce >= SUSPEND_DEBOUNCE_MAX) {
+            ESP_LOGI(TAG, "USB suspended for %ds — PC must be offline",
+                     SUSPEND_DEBOUNCE_MAX * USB_SYNC_INTERVAL_S);
+            system_state_set_pc(PC_STATE_OFFLINE);
+            system_state_set_os(BOOTED_OS_UNKNOWN);
+            s_suspend_debounce = 0;
+        }
+        return;
+    }
+
+    /* Not suspended (bus active) — reset debounce */
+    s_suspend_debounce = 0;
+}
 
 /* ─────────────────────────────────────────────────────────────────── */
 /* WiFi callbacks                                                        */
@@ -113,6 +173,16 @@ void app_main(void)
         ESP_LOGW(TAG, "USB HID keyboard init failed (%s). GRUB selection disabled.",
                  esp_err_to_name(usb_err));
     }
+
+    /* Start USB ↔ PC state auto-sync (polls tud_mounted() every 3 s) */
+    esp_timer_create_args_t sync_timer_args = {
+        .callback = usb_sync_timer_cb,
+        .arg      = NULL,
+        .name     = "usb_sync",
+    };
+    esp_timer_handle_t sync_timer = NULL;
+    esp_timer_create(&sync_timer_args, &sync_timer);
+    esp_timer_start_periodic(sync_timer, (uint64_t)USB_SYNC_INTERVAL_S * 1000000);
 
     /* ── 3. HAL: POST detector (mode selected in Kconfig) ──────── */
     IPostDetector *post_det = NULL;

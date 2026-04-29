@@ -411,7 +411,7 @@ static esp_err_t handler_log(httpd_req_t *req)
     if (start + want > total) want = total - start;
     if (want < 0) want = 0;
 
-    log_entry_t *entries = malloc((size_t)want * LOG_ENTRY_SIZE);
+    log_entry_t *entries = malloc((size_t)want * sizeof(log_entry_t));
     int got = 0;
     if (entries && want > 0) {
         got = log_buffer_read(start, want, entries);
@@ -551,6 +551,18 @@ static esp_err_t handler_update(httpd_req_t *req)
 }
 
 /* ─────────────────────────────────────────────────────────────────── */
+/* POST /api/reset_state                                                  */
+/* ─────────────────────────────────────────────────────────────────── */
+static esp_err_t handler_reset_state(httpd_req_t *req)
+{
+    if (!check_token(req)) return send_unauthorized(req);
+    system_state_set_pc(PC_STATE_OFFLINE);
+    system_state_set_os(BOOTED_OS_UNKNOWN);
+    ESP_LOGI(TAG, "State reset to OFFLINE via API");
+    return send_json(req, "{\"status\":\"reset_to_offline\"}");
+}
+
+/* ─────────────────────────────────────────────────────────────────── */
 /* POST /api/auth_now                                                    */
 /* ─────────────────────────────────────────────────────────────────── */
 static esp_err_t handler_auth_now(httpd_req_t *req)
@@ -636,6 +648,7 @@ esp_err_t http_server_start(const http_server_deps_t *deps)
     REGISTER(HTTP_PUT,  "/api/config",    handler_config_put);
     REGISTER(HTTP_GET,  "/api/netstat",   handler_netstat);
     REGISTER(HTTP_GET,  "/api/log",       handler_log);
+    REGISTER(HTTP_POST, "/api/reset_state", handler_reset_state);
     REGISTER(HTTP_POST, "/api/auth_now",  handler_auth_now);
 
     /* CORS preflights */
@@ -647,6 +660,7 @@ esp_err_t http_server_start(const http_server_deps_t *deps)
     REGISTER(HTTP_OPTIONS, "/api/reboot_os", handler_options);
     REGISTER(HTTP_OPTIONS, "/api/update/info", handler_options);
     REGISTER(HTTP_OPTIONS, "/api/update",      handler_options);
+    REGISTER(HTTP_OPTIONS, "/api/reset_state", handler_options);
     REGISTER(HTTP_OPTIONS, "/api/auth_now",  handler_options);
     REGISTER(HTTP_OPTIONS, "/api/log",       handler_options);
 

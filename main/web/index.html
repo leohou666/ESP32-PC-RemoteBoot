@@ -124,6 +124,12 @@
           </svg>
           强制断电
         </button>
+        <button class="btn btn-ghost" id="btn-reset-state" onclick="confirmResetState()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
+          </svg>
+          重置状态
+        </button>
       </div>
     </div>
 
@@ -137,6 +143,7 @@
         <div class="log-tab-actions">
           <button class="btn btn-ghost btn-sm" id="btn-log-clear" onclick="clearLog()">清空</button>
           <button class="btn btn-ghost btn-sm" id="btn-log-refresh" onclick="refreshSystemLog()" style="display:none">刷新</button>
+          <button class="btn btn-ghost btn-sm" id="btn-log-fullscreen" onclick="openLogModal()" style="display:none">全屏</button>
         </div>
       </div>
       <!-- Action log -->
@@ -319,7 +326,27 @@
     </div>
   </div>
 
-  <!-- Confirm Modal -->
+  <!-- Log Fullscreen Modal -->
+  <div id="log-modal" class="modal-overlay" style="display:none" onclick="closeLogModal()">
+    <div class="log-modal" onclick="event.stopPropagation()">
+      <div class="log-modal-header">
+        <span>系统日志</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <input type="text" id="log-filter-modal" class="log-filter-input" placeholder="过滤..." oninput="applyLogFilterModal()" style="width:180px">
+          <select id="log-lvl-filter-modal" class="log-filter-select" onchange="applyLogFilterModal()">
+            <option value="*">全部</option>
+            <option value="E">ERROR</option>
+            <option value="W">WARN</option>
+            <option value="I">INFO</option>
+            <option value="D">DEBUG</option>
+          </select>
+          <button class="btn btn-ghost btn-sm" onclick="refreshSystemLog()">刷新</button>
+          <button class="btn btn-ghost btn-sm" onclick="closeLogModal()">✕</button>
+        </div>
+      </div>
+      <div id="log-modal-entries" class="log-modal-entries"></div>
+    </div>
+  </div>
   <div id="modal" class="modal-overlay" onclick="closeModal()">
     <div class="modal" onclick="event.stopPropagation()">
       <h3 id="modal-title">确认操作</h3>

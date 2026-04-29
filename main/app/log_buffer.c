@@ -108,6 +108,24 @@ static int log_vprintf_hook(const char *fmt, va_list args)
     }
 
     /* ── Write to ring buffer ───────────────────────────────────────── */
+    /* If no tag was parsed, append to the previous entry instead of creating a new one */
+    if (tag_str[0] == '\0' && msg_start[0] != '\0') {
+        portENTER_CRITICAL(&s_lock);
+        int prev = (s_head - 1 + s_capacity) % s_capacity;
+        log_entry_t *prev_entry = &s_entries[prev];
+        int existing = (int)strlen(prev_entry->msg);
+        int space = LOG_MSG_MAX - 1 - existing;
+        if (space > 1) {
+            prev_entry->msg[existing] = ' ';
+            int append_len = (int)strlen(msg_start);
+            if (append_len > space - 1) append_len = space - 1;
+            memcpy(prev_entry->msg + existing + 1, msg_start, append_len);
+            prev_entry->msg[existing + 1 + append_len] = '\0';
+        }
+        portEXIT_CRITICAL(&s_lock);
+        return ret;
+    }
+
     portENTER_CRITICAL(&s_lock);
     int idx = s_head;
     s_head = (s_head + 1) % s_capacity;
@@ -145,12 +163,12 @@ esp_err_t log_buffer_init(void)
     if (psram_free > 64 * 1024) {
         /* Use 80% of free PSRAM */
         buf_size = psram_free * 80 / 100;
-        /* Align to LOG_ENTRY_SIZE */
-        buf_size = (buf_size / LOG_ENTRY_SIZE) * LOG_ENTRY_SIZE;
+        /* Align to sizeof(log_entry_t) */
+        buf_size = (buf_size / sizeof(log_entry_t)) * sizeof(log_entry_t);
 
         s_entries = heap_caps_malloc(buf_size, MALLOC_CAP_SPIRAM);
         if (s_entries) {
-            s_capacity = (int)(buf_size / LOG_ENTRY_SIZE);
+            s_capacity = (int)(buf_size / sizeof(log_entry_t));
             ESP_LOGI(TAG, "PSRAM log buffer: %d entries, %zu bytes (%.1f%% of %zu KB free)",
                      s_capacity, buf_size,
                      (double)buf_size / (double)psram_free * 100.0,
@@ -164,7 +182,7 @@ esp_err_t log_buffer_init(void)
 
     if (s_entries == NULL) {
         /* Fallback: small DRAM buffer */
-        buf_size  = 64 * LOG_ENTRY_SIZE; /* 8KB */
+        buf_size  = 64 * sizeof(log_entry_t);
         s_entries = malloc(buf_size);
         if (!s_entries) return ESP_ERR_NO_MEM;
         s_capacity = 64;
@@ -211,7 +229,7 @@ int log_buffer_read(int start, int want, log_entry_t *out)
 
     for (int i = 0; i < want; i++) {
         int src = (base + i) % capacity;
-        memcpy(&out[i], &s_entries[src], LOG_ENTRY_SIZE);
+        memcpy(&out[i], &s_entries[src], sizeof(log_entry_t));
     }
 
     return want;
