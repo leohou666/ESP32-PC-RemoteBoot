@@ -30,6 +30,9 @@ extern "C" {
 #define CFG_KEY_GPIO_RELAY1      "gpio_relay1"
 #define CFG_KEY_GPIO_RELAY2      "gpio_relay2"
 #define CFG_KEY_GPIO_POST        "gpio_post"
+#define CFG_KEY_RELAY_POLARITY   "relay_pol"
+#define CFG_KEY_BOOTLOADER_TYPE  "btldr_type"
+#define CFG_KEY_POST_SETTLE_MS   "post_settle"
 
 /**
  * @brief Initialise NVS flash and open the "rb" namespace.

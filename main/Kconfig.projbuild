@@ -18,6 +18,52 @@ menu "RemoteBoot Configuration"
             default 6
             help
                 GPIO pin connected to PC HDD LED for POST detection.
+
+        choice RB_RELAY_POLARITY
+            prompt "Relay trigger polarity"
+            default RB_RELAY_ACTIVE_LOW
+            help
+                Most cheap relay modules are active-LOW (GPIO LOW = relay ON).
+                If your relay triggers when GPIO is HIGH, select active-HIGH.
+
+            config RB_RELAY_ACTIVE_LOW
+                bool "Active-LOW (default)"
+                help
+                    Relay energises when GPIO is LOW. GPIO HIGH = relay OFF.
+                    Uses internal pull-up resistors to prevent spurious
+                    trigger during ESP32 reset/power-loss.
+
+            config RB_RELAY_ACTIVE_HIGH
+                bool "Active-HIGH"
+                help
+                    Relay energises when GPIO is HIGH. GPIO LOW = relay OFF.
+                    Uses internal pull-down resistors.
+        endchoice
+    endmenu
+
+    menu "Bootloader"
+        choice RB_BOOTLOADER_TYPE
+            prompt "PC bootloader type"
+            default RB_BOOTLOADER_WINDOWS
+            help
+                Select which bootloader your PC uses. This determines
+                USB POST detection strategy and whether OS selection
+                (keyboard navigation) is needed.
+
+            config RB_BOOTLOADER_WINDOWS
+                bool "Windows Boot Manager (recommended)"
+                help
+                    Single OS (Windows). USB POST detection uses first
+                    mount event. No keyboard navigation needed — PC boots
+                    directly into Windows.
+
+            config RB_BOOTLOADER_GRUB
+                bool "GRUB (dual-boot)"
+                help
+                    Multi-OS GRUB menu. USB POST detection waits for
+                    mount→unmount→remount cycle (BIOS→GRUB handoff).
+                    Keyboard navigation selects the target OS.
+        endchoice
     endmenu
 
     menu "POST Detector"

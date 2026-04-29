@@ -26,7 +26,7 @@ function toast(msg, type = 'info') {
 
 /* ─── Log ────────────────────────────────────────────────────── */
 function addLog(msg, type = '') {
-  const box = document.getElementById('log');
+  const box = document.getElementById('log-action');
   if (!box) return;
   const now = new Date().toLocaleTimeString('zh-CN', { hour12: false });
   const entry = document.createElement('div');
@@ -39,8 +39,96 @@ function addLog(msg, type = '') {
 }
 
 function clearLog() {
-  const box = document.getElementById('log');
-  if (box) box.innerHTML = '';
+  const tab = document.getElementById('tab-action');
+  if (tab && tab.classList.contains('active')) {
+    const box = document.getElementById('log-action');
+    if (box) box.innerHTML = '';
+  } else {
+    // Clear system log via API
+    api('GET', '/api/log?clear=1').then(refreshSystemLog).catch(() => {});
+  }
+}
+
+/* ─── System Log (ring buffer) ─────────────────────────────────── */
+let sysLogActive = false;
+let sysLogTimer = null;
+let sysLogEntries = [];  // cached for filtering
+
+async function refreshSystemLog() {
+  if (!token) return;
+  try {
+    const data = await api('GET', '/api/log?count=500');
+    sysLogEntries = data.entries || [];
+    const info = document.getElementById('log-info');
+    if (info) info.textContent = `共 ${data.count} / ${data.capacity} 条`;
+    renderLogEntries();
+  } catch (e) {
+    // ignore
+  }
+}
+
+function applyLogFilter() {
+  renderLogEntries();
+}
+
+function renderLogEntries() {
+  const box = document.getElementById('log-system-entries');
+  if (!box) return;
+  const filter = (document.getElementById('log-filter')?.value || '').toLowerCase();
+  const lvlFilter = document.getElementById('log-lvl-filter')?.value || '*';
+
+  const lvlClass = { E: 'log-err', W: 'log-warn', I: '', D: 'log-debug', V: 'log-debug' };
+  let html = '';
+  for (const e of sysLogEntries) {
+    if (lvlFilter !== '*' && String.fromCharCode(e.lvl) !== lvlFilter) continue;
+    const text = (e.tag + ' ' + e.msg).toLowerCase();
+    if (filter && text.indexOf(filter) === -1) continue;
+
+    const ts = new Date(e.ts);
+    const time = ts.toLocaleTimeString('zh-CN', { hour12: false });
+    const cls = lvlClass[String.fromCharCode(e.lvl)] || '';
+    const tagEsc = escHtml(e.tag);
+    const msgEsc = escHtml(e.msg);
+    html += `<div class="log-entry"><span class="log-time">${time}</span><span class="${cls}">[${String.fromCharCode(e.lvl)}] ${tagEsc}: ${msgEsc}</span></div>`;
+  }
+  box.innerHTML = html || '<div class="log-entry"><span class="log-time">—</span>暂无匹配日志</div>';
+  box.scrollTop = box.scrollHeight;
+}
+
+function escHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+function switchLogTab(tab) {
+  const tabAction = document.getElementById('tab-action');
+  const tabSystem = document.getElementById('tab-system');
+  const boxAction = document.getElementById('log-action');
+  const boxSystem = document.getElementById('log-system');
+  const btnClear = document.getElementById('btn-log-clear');
+  const btnRefresh = document.getElementById('btn-log-refresh');
+
+  if (tab === 'system') {
+    sysLogActive = true;
+    tabAction.classList.remove('active');
+    tabSystem.classList.add('active');
+    boxAction.style.display = 'none';
+    boxSystem.style.display = '';
+    btnRefresh.style.display = '';
+    btnClear.style.display = '';
+    refreshSystemLog();
+    sysLogTimer = setInterval(refreshSystemLog, 5000);
+  } else {
+    sysLogActive = false;
+    tabSystem.classList.remove('active');
+    tabAction.classList.add('active');
+    boxSystem.style.display = 'none';
+    boxAction.style.display = '';
+    btnRefresh.style.display = 'none';
+    btnClear.style.display = '';
+    if (sysLogTimer) { clearInterval(sysLogTimer); sysLogTimer = null; }
+  }
 }
 
 /* ─── API calls ──────────────────────────────────────────────── */
@@ -217,6 +305,11 @@ async function loadConfig() {
     setVal('cfg-grub-wait', cfg.grub_wait_ms);
     setVal('cfg-ping-interval', cfg.ping_interval_s);
     setVal('cfg-hdd-quiet', cfg.hdd_quiet_ms);
+    setVal('cfg-btldr-type', cfg.btldr_type != null ? cfg.btldr_type : 1);
+    setVal('cfg-relay-pol',  cfg.relay_pol != null ? cfg.relay_pol : 0);
+    setVal('cfg-post-settle', cfg.post_settle != null ? cfg.post_settle : 2000);
+    // Show/hide GRUB section based on bootloader type
+    updateGrubVisibility();
   } catch(e) {
     // Token not set yet or not connected
   }
@@ -242,6 +335,9 @@ async function saveConfig() {
   n('grub_wait_ms',    getVal('cfg-grub-wait'));
   n('ping_interval_s', getVal('cfg-ping-interval'));
   n('hdd_quiet_ms',    getVal('cfg-hdd-quiet'));
+  n('btldr_type',      getVal('cfg-btldr-type'));
+  n('relay_pol',       getVal('cfg-relay-pol'));
+  n('post_settle',     getVal('cfg-post-settle'));
 
   if (Object.keys(payload).length > 0) {
     try {
@@ -257,6 +353,15 @@ async function saveConfig() {
   }
 
   await refreshUpdateInfo();
+}
+
+function updateGrubVisibility() {
+  const btldrEl = document.getElementById('cfg-btldr-type');
+  const grubSection = document.getElementById('grub-section');
+  if (btldrEl && grubSection) {
+    const isGrub = btldrEl.value === '0';
+    grubSection.style.display = isGrub ? '' : 'none';
+  }
 }
 
 /* ─── Helpers ────────────────────────────────────────────────── */

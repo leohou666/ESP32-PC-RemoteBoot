@@ -2,9 +2,8 @@
  * @file boot_manager.h
  * @brief PC boot flow state machine.
  *
- * Orchestrates: relay press → POST wait → OS select → online check.
- * All steps are asynchronous; completion is signaled via callbacks or
- * by reading the system_state.
+ * Orchestrates: relay press → POST wait → OS select (if GRUB) → online.
+ * With Windows Boot Manager, POST complete goes directly to ONLINE.
  */
 #pragma once
 
@@ -19,12 +18,11 @@ extern "C" {
 typedef struct {
     IRelayController *relay;       /*!< Hardware relay control         */
     IPostDetector    *post_det;    /*!< POST completion detector       */
-    void             *os_sel;      /*!< os_selector handle             */
+    void             *os_sel;      /*!< os_selector handle (NULL = no OS selection) */
     IUsbHidKeyboard  *keyboard;    /*!< Direct keyboard access (for BIOS entry) */
     uint32_t          relay_press_ms;    /*!< Normal power press duration */
     uint32_t          relay_force_ms;    /*!< Force-off press duration    */
     uint32_t          relay_reset_ms;    /*!< Reset press duration        */
-    const char       *pc_ip;       /*!< PC IP for online detection (can be NULL) */
 } boot_manager_config_t;
 
 /**
@@ -37,7 +35,7 @@ esp_err_t boot_manager_create(const boot_manager_config_t *cfg, void **out);
 /**
  * @brief Initiate a boot sequence.
  * @param handle      boot_manager handle
- * @param target_os   Which OS to select at GRUB
+ * @param target_os   Which OS to select at GRUB (ignored if os_sel is NULL)
  * @return ESP_ERR_INVALID_STATE if PC is already booting or online
  */
 esp_err_t boot_manager_boot(void *handle, os_target_t target_os);

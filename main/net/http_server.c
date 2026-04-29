@@ -9,6 +9,7 @@
 #include "boot_manager.h"
 #include "ota_manager.h"
 #include "wifi_manager.h"
+#include "log_buffer.h"
 
 #include <string.h>
 #include <stdlib.h>
@@ -278,6 +279,12 @@ static esp_err_t handler_config_get(httpd_req_t *req)
         config_get_u16(CFG_KEY_PING_INTERVAL_S, 300));
     cJSON_AddNumberToObject(root, "hdd_quiet_ms",
         config_get_u16(CFG_KEY_HDD_QUIET_MS, 1500));
+    cJSON_AddNumberToObject(root, "relay_pol",
+        config_get_u8(CFG_KEY_RELAY_POLARITY, 0));
+    cJSON_AddNumberToObject(root, "btldr_type",
+        config_get_u8(CFG_KEY_BOOTLOADER_TYPE, 1));
+    cJSON_AddNumberToObject(root, "post_settle",
+        config_get_u16(CFG_KEY_POST_SETTLE_MS, CONFIG_RB_USB_POST_SETTLE_MS));
 
     char *js = cJSON_PrintUnformatted(root);
     send_json(req, js);
@@ -330,6 +337,9 @@ static esp_err_t handler_config_put(httpd_req_t *req)
     SET_U16("grub_wait_ms",   CFG_KEY_GRUB_WAIT_MS);
     SET_U16("ping_interval_s",CFG_KEY_PING_INTERVAL_S);
     SET_U16("hdd_quiet_ms",   CFG_KEY_HDD_QUIET_MS);
+    SET_U8 ("relay_pol",      CFG_KEY_RELAY_POLARITY);
+    SET_U8 ("btldr_type",     CFG_KEY_BOOTLOADER_TYPE);
+    SET_U16("post_settle",    CFG_KEY_POST_SETTLE_MS);
 
     cJSON_Delete(json);
     return send_json(req, "{\"status\":\"saved\"}");
@@ -349,6 +359,85 @@ static esp_err_t handler_netstat(httpd_req_t *req)
     char *js = cJSON_PrintUnformatted(root);
     send_json(req, js);
     free(js); cJSON_Delete(root);
+    return ESP_OK;
+}
+
+/* ─────────────────────────────────────────────────────────────────── */
+/* GET /api/log                                                          */
+/* ─────────────────────────────────────────────────────────────────── */
+static esp_err_t handler_log(httpd_req_t *req)
+{
+    if (!check_token(req)) return send_unauthorized(req);
+
+    /* Parse query params from URI */
+    char uri[256] = {0};
+    int start = 0, count = 100, clear_flag = 0, info_flag = 0;
+    if (httpd_req_get_url_query_str(req, uri, sizeof(uri)) == ESP_OK) {
+        char val[32];
+        if (httpd_query_key_value(uri, "start", val, sizeof(val)) == ESP_OK)
+            start = atoi(val);
+        if (httpd_query_key_value(uri, "count", val, sizeof(val)) == ESP_OK)
+            count = atoi(val);
+        if (count > 500) count = 500;
+        if (httpd_query_key_value(uri, "clear", val, sizeof(val)) == ESP_OK)
+            clear_flag = atoi(val);
+        if (httpd_query_key_value(uri, "info", val, sizeof(val)) == ESP_OK)
+            info_flag = atoi(val);
+    }
+
+    if (clear_flag) {
+        log_buffer_clear();
+    }
+
+    int capacity, total, head;
+    bool wrapped;
+    log_buffer_info(&capacity, &total, &head, &wrapped);
+
+    if (info_flag) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddNumberToObject(root, "capacity", capacity);
+        cJSON_AddNumberToObject(root, "count", total);
+        cJSON_AddNumberToObject(root, "head", head);
+        cJSON_AddBoolToObject(root, "wrapped", wrapped);
+        char *js = cJSON_PrintUnformatted(root);
+        send_json(req, js);
+        free(js); cJSON_Delete(root);
+        return ESP_OK;
+    }
+
+    /* Read requested range */
+    if (start > total) start = total > 0 ? total - 1 : 0;
+    int want = count;
+    if (start + want > total) want = total - start;
+    if (want < 0) want = 0;
+
+    log_entry_t *entries = malloc((size_t)want * LOG_ENTRY_SIZE);
+    int got = 0;
+    if (entries && want > 0) {
+        got = log_buffer_read(start, want, entries);
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "capacity", capacity);
+    cJSON_AddNumberToObject(root, "count", total);
+    cJSON_AddNumberToObject(root, "head", head);
+    cJSON_AddNumberToObject(root, "start", start);
+    cJSON_AddNumberToObject(root, "returned", got);
+
+    cJSON *arr = cJSON_AddArrayToObject(root, "entries");
+    for (int i = 0; i < got; i++) {
+        cJSON *e = cJSON_CreateObject();
+        cJSON_AddNumberToObject(e, "ts",  (double)entries[i].timestamp_ms);
+        cJSON_AddNumberToObject(e, "lvl", entries[i].level);
+        cJSON_AddStringToObject(e, "tag", entries[i].tag);
+        cJSON_AddStringToObject(e, "msg", entries[i].msg);
+        cJSON_AddItemToArray(arr, e);
+    }
+
+    char *js = cJSON_PrintUnformatted(root);
+    send_json(req, js);
+    free(js); cJSON_Delete(root);
+    free(entries);
     return ESP_OK;
 }
 
@@ -524,6 +613,7 @@ esp_err_t http_server_start(const http_server_deps_t *deps)
     httpd_config_t cfg   = HTTPD_DEFAULT_CONFIG();
     cfg.server_port      = 80;
     cfg.max_uri_handlers = 36;
+    cfg.stack_size       = 12288;  /* OTA handler's 4KB buf needs extra room */
 
     esp_err_t err = httpd_start(&s_server, &cfg);
     if (err != ESP_OK) return err;
@@ -545,6 +635,7 @@ esp_err_t http_server_start(const http_server_deps_t *deps)
     REGISTER(HTTP_GET,  "/api/config",    handler_config_get);
     REGISTER(HTTP_PUT,  "/api/config",    handler_config_put);
     REGISTER(HTTP_GET,  "/api/netstat",   handler_netstat);
+    REGISTER(HTTP_GET,  "/api/log",       handler_log);
     REGISTER(HTTP_POST, "/api/auth_now",  handler_auth_now);
 
     /* CORS preflights */
@@ -557,6 +648,7 @@ esp_err_t http_server_start(const http_server_deps_t *deps)
     REGISTER(HTTP_OPTIONS, "/api/update/info", handler_options);
     REGISTER(HTTP_OPTIONS, "/api/update",      handler_options);
     REGISTER(HTTP_OPTIONS, "/api/auth_now",  handler_options);
+    REGISTER(HTTP_OPTIONS, "/api/log",       handler_options);
 
     ESP_LOGI(TAG, "HTTP server started on port %d", cfg.server_port);
     return ESP_OK;

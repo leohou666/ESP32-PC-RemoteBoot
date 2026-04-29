@@ -12,6 +12,7 @@ set(SRCS
     "app/boot_manager.c"
     "app/os_selector.c"
     "app/ota_manager.c"
+    "app/log_buffer.c"
 )
 
 idf_component_register(
@@ -32,6 +33,7 @@ idf_component_register(
         esp_tinyusb
         freertos
         log
+        heap
     EMBED_TXTFILES
         "web/index.html"
         "web/style.css"

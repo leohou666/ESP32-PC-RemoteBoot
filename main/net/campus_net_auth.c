@@ -125,10 +125,14 @@ static void campus_net_task(void *arg)
 
         ESP_LOGD(TAG, "Checking internet...");
         bool online = check_internet();
+        bool was_online = s_online;
         s_online = online;
 
         if (online) {
-            ESP_LOGI(TAG, "Internet OK");
+            /* Only log on transition (was offline → now online) */
+            if (!was_online) {
+                ESP_LOGI(TAG, "Internet restored");
+            }
             system_state_set_campus_net(CAMPUS_NET_OK);
         } else {
             ESP_LOGW(TAG, "Internet unreachable, triggering campus auth...");

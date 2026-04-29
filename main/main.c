@@ -35,11 +35,27 @@
 #include "os_selector.h"
 #include "boot_manager.h"
 #include "ota_manager.h"
+#include "log_buffer.h"
 
 /* Kconfig-defined defaults */
 #include "sdkconfig.h"
 
 #define TAG "main"
+
+/* ─────────────────────────────────────────────────────────────────── */
+/* Kconfig → NVS defaults for runtime-configurable keys                 */
+/* ─────────────────────────────────────────────────────────────────── */
+#ifdef CONFIG_RB_RELAY_ACTIVE_LOW
+  #define RB_DEF_RELAY_POLARITY 0
+#else
+  #define RB_DEF_RELAY_POLARITY 1
+#endif
+
+#ifdef CONFIG_RB_BOOTLOADER_WINDOWS
+  #define RB_DEF_BOOTLOADER_TYPE 1
+#else
+  #define RB_DEF_BOOTLOADER_TYPE 0
+#endif
 
 /* ─────────────────────────────────────────────────────────────────── */
 /* WiFi callbacks                                                        */
@@ -71,13 +87,24 @@ void app_main(void)
     ESP_ERROR_CHECK(system_state_init());
     ESP_ERROR_CHECK(config_ensure_api_token());
     ESP_ERROR_CHECK(ota_manager_init());
+    ESP_ERROR_CHECK(log_buffer_init());
+
+    /* ── Read runtime config (NVS with Kconfig defaults) ───────── */
+    uint8_t relay_pol  = config_get_u8(CFG_KEY_RELAY_POLARITY, RB_DEF_RELAY_POLARITY);
+    uint8_t btldr_type = config_get_u8(CFG_KEY_BOOTLOADER_TYPE, RB_DEF_BOOTLOADER_TYPE);
+    bool is_windows_bt = (btldr_type != 0);  /* 0=GRUB, 1=Windows */
+    bool relay_active_low = (relay_pol == 0);
+
+    ESP_LOGI(TAG, "Config: relay=%s btldr=%s",
+             relay_active_low ? "active-LOW" : "active-HIGH",
+             is_windows_bt ? "Windows" : "GRUB");
 
     /* ── 2. HAL: Relay controller ──────────────────────────────── */
     uint8_t gpio_r1 = config_get_u8(CFG_KEY_GPIO_RELAY1, CONFIG_RB_GPIO_RELAY1);
     uint8_t gpio_r2 = config_get_u8(CFG_KEY_GPIO_RELAY2, CONFIG_RB_GPIO_RELAY2);
 
     IRelayController *relay = NULL;
-    ESP_ERROR_CHECK(relay_controller_create(gpio_r1, gpio_r2, &relay));
+    ESP_ERROR_CHECK(relay_controller_create(gpio_r1, gpio_r2, relay_active_low, &relay));
 
     /* ── 4. HAL: USB HID keyboard ──────────────────────────── */
     IUsbHidKeyboard *keyboard = NULL;
@@ -85,16 +112,19 @@ void app_main(void)
     if (usb_err != ESP_OK) {
         ESP_LOGW(TAG, "USB HID keyboard init failed (%s). GRUB selection disabled.",
                  esp_err_to_name(usb_err));
-        /* System continues without keyboard — user must set OS_TARGET_DEFAULT */
     }
 
     /* ── 3. HAL: POST detector (mode selected in Kconfig) ──────── */
     IPostDetector *post_det = NULL;
 #if CONFIG_RB_POST_DETECT_USB
-    ESP_LOGI(TAG, "POST detection mode: USB bus handshake");
+    uint16_t post_settle = config_get_u16(CFG_KEY_POST_SETTLE_MS, CONFIG_RB_USB_POST_SETTLE_MS);
+
+    ESP_LOGI(TAG, "POST detection mode: USB bus handshake (mode=%s settle=%ums)",
+             is_windows_bt ? "simple" : "GRUB", post_settle);
     usb_post_detector_config_t upost_cfg = {
-        .settle_ms  = CONFIG_RB_USB_POST_SETTLE_MS,
-        .timeout_ms = CONFIG_RB_POST_TIMEOUT_MS,
+        .settle_ms           = post_settle,
+        .timeout_ms          = CONFIG_RB_POST_TIMEOUT_MS,
+        .first_mount_is_post = is_windows_bt,
     };
     ESP_ERROR_CHECK(usb_post_detector_create(&upost_cfg, &post_det));
 #else
@@ -110,9 +140,9 @@ void app_main(void)
     ESP_ERROR_CHECK(post_detector_create(&post_cfg, &post_det));
 #endif
 
-    /* ── 5. App: OS selector ─────────────────────────────────── */
+    /* ── 5. App: OS selector (GRUB only) ──────────────────────── */
     void *os_sel = NULL;
-    if (keyboard) {
+    if (!is_windows_bt && keyboard) {
         os_selector_config_t os_cfg = {
             .keyboard         = keyboard,
             .grub_win_idx     = config_get_u8(CFG_KEY_GRUB_WIN_IDX,
@@ -125,21 +155,20 @@ void app_main(void)
                                                CONFIG_RB_GRUB_WAIT_MS),
         };
         ESP_ERROR_CHECK(os_selector_create(&os_cfg, &os_sel));
+        ESP_LOGI(TAG, "GRUB mode: OS selector created");
+    } else if (is_windows_bt) {
+        ESP_LOGI(TAG, "Windows Boot Manager mode: OS selector skipped");
     }
 
     /* ── 6. App: Boot manager ────────────────────────────────── */
-    char pc_ip[32] = {0};
-    config_get_str(CFG_KEY_PC_IP, pc_ip, sizeof(pc_ip));
-
     boot_manager_config_t bm_cfg = {
-        .relay         = relay,
-        .post_det      = post_det,
-        .os_sel        = os_sel,
-        .keyboard      = keyboard,
+        .relay          = relay,
+        .post_det       = post_det,
+        .os_sel         = os_sel,
+        .keyboard       = keyboard,
         .relay_press_ms = CONFIG_RB_RELAY_SOFT_PRESS_MS,
         .relay_force_ms = CONFIG_RB_RELAY_HARD_PRESS_MS,
         .relay_reset_ms = CONFIG_RB_RELAY_RESET_PRESS_MS,
-        .pc_ip         = pc_ip[0] ? pc_ip : NULL,
     };
     void *boot_mgr = NULL;
     ESP_ERROR_CHECK(boot_manager_create(&bm_cfg, &boot_mgr));
@@ -183,5 +212,4 @@ void app_main(void)
     ESP_LOGI(TAG, "RemoteBoot ready. Connect to WiFi and navigate to:");
     ESP_LOGI(TAG, "  http://<ESP32_IP>  (local network)");
     ESP_LOGI(TAG, "All tasks running. app_main() returns.");
-    /* All work is done in FreeRTOS tasks / event handlers */
 }

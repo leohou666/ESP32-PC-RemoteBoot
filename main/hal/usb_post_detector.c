@@ -2,19 +2,10 @@
  * @file usb_post_detector.c
  * @brief POST completion detector via USB bus mount/unmount events.
  *
- * See usb_post_detector.h for the algorithm description.
+ * Two detection strategies (see usb_post_detector.h for details):
  *
- * State machine:
- *   IDLE  → start() → WAITING_FIRST_MOUNT
- *   WAITING_FIRST_MOUNT  → mount event → SETTLING
- *   SETTLING  → unmount → WAITING_REMOUNT  (BIOS→GRUB transition)
- *   WAITING_REMOUNT → mount event → SETTLING  (restart settle timer)
- *   SETTLING  → settle timer expires → DONE  (fire callback)
- *
- * The settle timer is an esp_timer oneshot.  Every time a new mount
- * event arrives the timer is restarted, so the callback only fires
- * once the bus has been quiet (mounted, no further resets) for
- * settle_ms.
+ *   GRUB mode:    mount → unmount → remount → settle → DONE
+ *   Simple mode:  mount → settle → DONE  (first mount = POST done)
  */
 #include "usb_post_detector.h"
 #include "usb_hid_keyboard.h"
@@ -52,7 +43,7 @@ typedef struct {
 } usb_post_det_t;
 
 /* ─────────────────────────────────────────────────────────────────── */
-/* Settle timer expired — POST is complete, GRUB is ready              */
+/* Settle timer expired — POST is complete                              */
 /* ─────────────────────────────────────────────────────────────────── */
 static void settle_timer_cb(void *arg)
 {
@@ -90,42 +81,65 @@ static void usb_event_handler(usb_mount_event_t event, void *arg)
     switch (event) {
     case USB_EVENT_MOUNTED:
         d->mount_count++;
-        ESP_LOGI(TAG, "USB MOUNT #%d (state=%d)", d->mount_count, d->state);
+        ESP_LOGI(TAG, "USB MOUNT #%d (state=%d, simple=%d)",
+                 d->mount_count, d->state, d->cfg.first_mount_is_post);
 
-        if (d->state == UPOST_WAITING_FIRST_MOUNT ||
-            d->state == UPOST_WAITING_REMOUNT) {
+        if (d->cfg.first_mount_is_post) {
+            /* Simple mode: first mount = POST done after settle */
+            if (d->state == UPOST_WAITING_FIRST_MOUNT) {
+                d->state = UPOST_SETTLING;
+                esp_timer_start_once(d->settle_timer,
+                                     (uint64_t)d->cfg.settle_ms * 1000);
+                ESP_LOGI(TAG, "Simple mode: first mount, settle timer started (%lu ms)",
+                         d->cfg.settle_ms);
+            }
+            /* Extra mounts while settling restart the timer
+               (bus still stabilising) */
+            if (d->state == UPOST_SETTLING) {
+                esp_timer_stop(d->settle_timer);
+                esp_timer_start_once(d->settle_timer,
+                                     (uint64_t)d->cfg.settle_ms * 1000);
+                ESP_LOGI(TAG, "Simple mode: settle timer restarted (extra mount)");
+            }
+        } else {
+            /* GRUB mode: wait for unmount+remount cycle */
+            if (d->state == UPOST_WAITING_FIRST_MOUNT ||
+                d->state == UPOST_WAITING_REMOUNT) {
 
-            d->state = UPOST_SETTLING;
-            /* Start (or restart) the settle timer */
-            esp_timer_stop(d->settle_timer);
-            esp_timer_start_once(d->settle_timer,
-                                 (uint64_t)d->cfg.settle_ms * 1000);
-            ESP_LOGI(TAG, "Settle timer started (%lu ms)", d->cfg.settle_ms);
-        } else if (d->state == UPOST_SETTLING) {
-            /* Another mount while settling — restart the timer
-               (this means there was yet another bus reset) */
-            esp_timer_stop(d->settle_timer);
-            esp_timer_start_once(d->settle_timer,
-                                 (uint64_t)d->cfg.settle_ms * 1000);
-            ESP_LOGI(TAG, "Settle timer restarted (extra mount)");
+                d->state = UPOST_SETTLING;
+                esp_timer_stop(d->settle_timer);
+                esp_timer_start_once(d->settle_timer,
+                                     (uint64_t)d->cfg.settle_ms * 1000);
+                ESP_LOGI(TAG, "GRUB mode: settle timer started (%lu ms)", d->cfg.settle_ms);
+            } else if (d->state == UPOST_SETTLING) {
+                /* Another mount while settling — restart the timer */
+                esp_timer_stop(d->settle_timer);
+                esp_timer_start_once(d->settle_timer,
+                                     (uint64_t)d->cfg.settle_ms * 1000);
+                ESP_LOGI(TAG, "GRUB mode: settle timer restarted (extra mount)");
+            }
         }
         break;
 
     case USB_EVENT_UNMOUNTED:
         ESP_LOGI(TAG, "USB UNMOUNT (state=%d)", d->state);
 
-        if (d->state == UPOST_SETTLING) {
-            /* BIOS→bootloader transition: bus was reset.
-               Stop the settle timer, wait for remount. */
-            esp_timer_stop(d->settle_timer);
-            d->state = UPOST_WAITING_REMOUNT;
-            ESP_LOGI(TAG, "Bus reset detected — waiting for remount (BIOS→GRUB)");
+        if (d->cfg.first_mount_is_post) {
+            /* Simple mode: unmount is informational, don't change state */
+            ESP_LOGI(TAG, "Simple mode: ignoring unmount event");
+        } else {
+            /* GRUB mode: unmount signals BIOS→GRUB handoff */
+            if (d->state == UPOST_SETTLING) {
+                esp_timer_stop(d->settle_timer);
+                d->state = UPOST_WAITING_REMOUNT;
+                ESP_LOGI(TAG, "GRUB mode: bus reset detected — waiting for remount");
+            }
         }
         break;
 
     case USB_EVENT_SUSPENDED:
     case USB_EVENT_RESUMED:
-        /* Informational only — don't affect state machine */
+        /* Informational only */
         break;
     }
 }
@@ -145,7 +159,8 @@ static void upost_start(IPostDetector *self, post_complete_cb_t cb, void *cb_ctx
     /* Start the overall timeout watchdog */
     esp_timer_start_once(d->timeout_timer, (uint64_t)d->cfg.timeout_ms * 1000);
 
-    ESP_LOGI(TAG, "USB POST detector started (settle=%lums, timeout=%lums)",
+    ESP_LOGI(TAG, "USB POST detector started (mode=%s, settle=%lums, timeout=%lums)",
+             d->cfg.first_mount_is_post ? "simple" : "GRUB",
              d->cfg.settle_ms, d->cfg.timeout_ms);
 }
 
@@ -204,7 +219,8 @@ esp_err_t usb_post_detector_create(const usb_post_detector_config_t *cfg,
     d->iface.is_pc_powered = upost_is_pc_powered;
 
     *out = &d->iface;
-    ESP_LOGI(TAG, "USB POST detector created (settle=%lums, timeout=%lums)",
+    ESP_LOGI(TAG, "USB POST detector created (mode=%s, settle=%lums, timeout=%lums)",
+             cfg->first_mount_is_post ? "simple" : "GRUB",
              cfg->settle_ms, cfg->timeout_ms);
     return ESP_OK;
 }
