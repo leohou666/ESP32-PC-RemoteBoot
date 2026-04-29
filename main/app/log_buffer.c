@@ -40,76 +40,74 @@ static vprintf_like_t s_orig_vprintf = NULL;
 
 /**
  * ESP_LOG macros pass a format like:
- *   "I (12345) tag: message\n"
- * We parse this to extract level, timestamp, tag, and message.
+ *   "I (12345) tag: message\n"   (+ variadic args for the message part)
+ *
+ * Strategy: format the full message with vsnprintf first, then parse the
+ * formatted output to extract level, timestamp, tag, and message text.
+ * This avoids va_list alignment issues — we don't need to know how many
+ * format specifiers were consumed by the prefix vs. the message body.
  */
 static int log_vprintf_hook(const char *fmt, va_list args)
 {
-    int ret = 0;
+    /* ── Pass-through to serial (with va_copy so original args survive) ── */
+    va_list args_copy;
+    va_copy(args_copy, args);
 
-    /* Always pass through to original (serial) output */
+    int ret = 0;
     if (s_orig_vprintf) {
-        ret = s_orig_vprintf(fmt, args);
+        ret = s_orig_vprintf(fmt, args_copy);
     }
+    va_end(args_copy);
 
     /* Skip if buffer not initialised */
     if (s_entries == NULL || s_capacity == 0) return ret;
 
-    /* Parse the ESP_LOG format: "<L> (<ts>) <tag>: <msg>" */
-    /* Example: "I (12345) wifi: Connected to AP\n" */
-    char level_char = '?';
-    int  log_ts     = 0;
-    char tag_str[16] = {0};
-    const char *msg_start = NULL;
+    /* ── Format the entire log line into a temp buffer ──────────────── */
+    char formatted[256];
+    int full_len = vsnprintf(formatted, sizeof(formatted), fmt, args);
+    if (full_len < 0) full_len = 0;
+    if (full_len >= (int)sizeof(formatted)) full_len = (int)sizeof(formatted) - 1;
 
-    /* Extract level */
-    const char *p = fmt;
-    if (*p && *(p + 1) == ' ' && *(p + 2) == '(') {
-        level_char = *p;
-        p += 3; /* skip "L (" */
-    } else {
-        /* Doesn't match ESP_LOG format, store as-is */
-        level_char = 'I';
-        msg_start  = fmt;
+    /* Remove trailing newline */
+    if (full_len > 0 && formatted[full_len - 1] == '\n') {
+        formatted[full_len - 1] = '\0';
+        full_len--;
     }
 
-    if (msg_start == NULL) {
-        /* Parse timestamp */
-        while (*p && *p >= '0' && *p <= '9') {
-            log_ts = log_ts * 10 + (*p - '0');
-            p++;
-        }
-        /* Skip ") " */
+    /* ── Parse the formatted output: "L (ts) tag: message" ──────────── */
+    char level_char = '?';
+    char tag_str[LOG_TAG_MAX] = {0};
+    const char *msg_start = formatted;
+
+    /* Try to match ESP_LOG pattern: first char is level, then " (" */
+    if (full_len >= 4 && formatted[1] == ' ' && formatted[2] == '(') {
+        level_char = formatted[0];
+        /* Skip "L (timestamp) " — find the closing paren+space */
+        const char *p = formatted + 3;
+        while (*p && *p != ')') p++;
         if (*p == ')') p++;
         if (*p == ' ') p++;
 
-        /* Extract tag (up to ':') */
+        /* Extract tag (characters up to ':') */
         const char *tag_begin = p;
         while (*p && *p != ':') p++;
         int tag_len = (int)(p - tag_begin);
-        if (tag_len > (int)sizeof(tag_str) - 1) tag_len = (int)sizeof(tag_str) - 1;
-        memcpy(tag_str, tag_begin, tag_len);
-        tag_str[tag_len] = '\0';
+        if (tag_len > LOG_TAG_MAX - 1) tag_len = LOG_TAG_MAX - 1;
+        if (tag_len > 0) {
+            memcpy(tag_str, tag_begin, tag_len);
+            tag_str[tag_len] = '\0';
+        }
 
-        /* Skip ": " */
+        /* Skip ": " to get to the message */
         if (*p == ':') p++;
         if (*p == ' ') p++;
         msg_start = p;
+    } else {
+        /* Non-standard format — store entire line as-is */
+        level_char = 'I';
     }
 
-    /* Format message with variadic args (snprintf into stack buffer) */
-    char msg_buf[LOG_MSG_MAX];
-    int msg_len = vsnprintf(msg_buf, sizeof(msg_buf), msg_start, args);
-    if (msg_len < 0) msg_len = 0;
-    if (msg_len >= (int)sizeof(msg_buf)) msg_len = (int)sizeof(msg_buf) - 1;
-
-    /* Strip trailing newline */
-    if (msg_len > 0 && msg_buf[msg_len - 1] == '\n') {
-        msg_buf[msg_len - 1] = '\0';
-        msg_len--;
-    }
-
-    /* Write to ring buffer (single writer, fast path) */
+    /* ── Write to ring buffer ───────────────────────────────────────── */
     portENTER_CRITICAL(&s_lock);
     int idx = s_head;
     s_head = (s_head + 1) % s_capacity;
@@ -122,9 +120,10 @@ static int log_vprintf_hook(const char *fmt, va_list args)
     strncpy(entry->tag, tag_str, LOG_TAG_MAX - 1);
     entry->tag[LOG_TAG_MAX - 1] = '\0';
 
+    int msg_len = (int)strlen(msg_start);
     int copy_len = msg_len < LOG_MSG_MAX ? msg_len : LOG_MSG_MAX - 1;
     if (copy_len > 0) {
-        memcpy(entry->msg, msg_buf, copy_len);
+        memcpy(entry->msg, msg_start, copy_len);
         entry->msg[copy_len] = '\0';
     } else {
         entry->msg[0] = '\0';
